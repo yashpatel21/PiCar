@@ -1,8 +1,10 @@
 import cv2
 import numpy as np
+import time
+import threading
+from queue import Queue
 from tflite_runtime.interpreter import Interpreter
 from tflite_runtime.interpreter import load_delegate
-
 
 # Load the TFLite model and allocate tensors
 def load_model(model_path):
@@ -13,20 +15,16 @@ def load_model(model_path):
     interpreter.allocate_tensors()
     return interpreter
 
-
 # Preprocess the input frame for inference
 def preprocess_image(image, target_size):
     resized = cv2.resize(image, target_size)
     return np.expand_dims(resized, axis=0).astype(np.uint8)
 
-
-# Draw bounding boxes and labels on the image
-def draw_objects(image, objs, labels, inference_size):
+# Draw bounding boxes, labels, and FPS on the image
+def draw_objects(image, objs, labels, inference_size, fps=None):
     height, width, _ = image.shape
-    scale_x, scale_y = width / inference_size[0], height / inference_size[1]
 
     for obj in objs:
-        # Scale bounding box to original image size
         ymin, xmin, ymax, xmax = obj['bbox']
         x0, y0, x1, y1 = int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height)
 
@@ -39,8 +37,12 @@ def draw_objects(image, objs, labels, inference_size):
         text = f"{confidence}% {label}"
         cv2.putText(image, text, (x0, max(0, y0 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
-    return image
+    # Draw FPS in the top-left corner
+    if fps is not None:
+        fps_text = f"FPS: {fps:.2f}"
+        cv2.putText(image, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
+    return image
 
 # Postprocess outputs to extract bounding boxes, class IDs, and confidence scores
 def detect_objects(interpreter, image, threshold):
@@ -52,10 +54,10 @@ def detect_objects(interpreter, image, threshold):
     interpreter.invoke()
 
     # Extract outputs
-    boxes = interpreter.get_tensor(output_details[0]['index'])[0]  # Bounding boxes
-    class_ids = interpreter.get_tensor(output_details[1]['index'])[0]  # Class IDs
-    scores = interpreter.get_tensor(output_details[2]['index'])[0]  # Confidence scores
-    num_detections = int(interpreter.get_tensor(output_details[3]['index'])[0])  # Number of detections
+    boxes = interpreter.get_tensor(output_details[0]['index'])[0]
+    class_ids = interpreter.get_tensor(output_details[1]['index'])[0]
+    scores = interpreter.get_tensor(output_details[2]['index'])[0]
+    num_detections = int(interpreter.get_tensor(output_details[3]['index'])[0])
 
     objs = []
     for i in range(num_detections):
@@ -68,10 +70,26 @@ def detect_objects(interpreter, image, threshold):
 
     return objs
 
+# Capture thread
+def capture_thread(cap, frame_queue, stop_event):
+    while not stop_event.is_set():
+        ret, frame = cap.read()
+        if not ret:
+            continue
+        frame_queue.put(frame)
+
+# Inference thread
+def inference_thread(interpreter, labels, frame_queue, result_queue, stop_event, input_size):
+    while not stop_event.is_set():
+        if frame_queue.empty():
+            continue
+        frame = frame_queue.get()
+        input_data = preprocess_image(frame, input_size)
+        objs = detect_objects(interpreter, input_data, threshold=0.5)
+        result_queue.put((frame, objs))
 
 # Main function
 def main():
-    # Model and label paths
     model_path = "ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite"
     label_path = "coco_labels.txt"
 
@@ -81,40 +99,58 @@ def main():
 
     # Load the model
     interpreter = load_model(model_path)
-    input_size = interpreter.get_input_details()[0]['shape'][1:3]  # Model input size (e.g., [300, 300])
+    input_size = interpreter.get_input_details()[0]['shape'][1:3]
 
-    # Initialize video capture
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Could not open camera.")
         return
 
+    # Set camera resolution
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
     print("Press 'q' to exit.")
 
+    # Queues for threading
+    frame_queue = Queue(maxsize=1)
+    result_queue = Queue(maxsize=1)
+    stop_event = threading.Event()
+
+    # Start threads
+    capture_thread_handle = threading.Thread(target=capture_thread, args=(cap, frame_queue, stop_event))
+    inference_thread_handle = threading.Thread(target=inference_thread, args=(interpreter, labels, frame_queue, result_queue, stop_event, input_size))
+
+    capture_thread_handle.start()
+    inference_thread_handle.start()
+
+    # FPS tracking
+    fps_start_time = time.time()
+    frame_count = 0
+    fps = 0.0
+
     while True:
-        # Read frame from camera
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Unable to read from camera.")
-            break
+        if not result_queue.empty():
+            frame, objs = result_queue.get()
+            frame_count += 1
+            fps_end_time = time.time()
+            elapsed_time = fps_end_time - fps_start_time
+            if elapsed_time > 1.0:
+                fps = frame_count / elapsed_time
+                fps_start_time = fps_end_time
+                frame_count = 0
 
-        # Preprocess frame
-        input_data = preprocess_image(frame, input_size)
+            frame = draw_objects(frame, objs, labels, input_size, fps=fps)
+            cv2.imshow("Object Detection", frame)
 
-        # Perform object detection
-        objs = detect_objects(interpreter, input_data, threshold=0.5)
-
-        # Draw objects on the frame
-        frame = draw_objects(frame, objs, labels, input_size)
-
-        # Display the output
-        cv2.imshow("Object Detection", frame)
-
-        # Exit loop if 'q' is pressed
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-    # Release resources
+    # Stop threads
+    stop_event.set()
+    capture_thread_handle.join()
+    inference_thread_handle.join()
+
     cap.release()
     cv2.destroyAllWindows()
 
