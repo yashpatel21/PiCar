@@ -6,43 +6,61 @@ from queue import Queue
 from tflite_runtime.interpreter import Interpreter
 from tflite_runtime.interpreter import load_delegate
 
+
 # Load the TFLite model and allocate tensors
 def load_model(model_path):
     interpreter = Interpreter(
-        model_path=model_path,
-        experimental_delegates=[load_delegate("libedgetpu.so.1")]
+        model_path=model_path, experimental_delegates=[load_delegate("libedgetpu.so.1")]
     )
     interpreter.allocate_tensors()
     return interpreter
+
 
 # Preprocess the input frame for inference
 def preprocess_image(image, target_size):
     resized = cv2.resize(image, target_size)
     return np.expand_dims(resized, axis=0).astype(np.uint8)
 
+
 # Draw bounding boxes, labels, and FPS on the image
 def draw_objects(image, objs, labels, inference_size, fps=None):
     height, width, _ = image.shape
 
     for obj in objs:
-        ymin, xmin, ymax, xmax = obj['bbox']
-        x0, y0, x1, y1 = int(xmin * width), int(ymin * height), int(xmax * width), int(ymax * height)
+        ymin, xmin, ymax, xmax = obj["bbox"]
+        x0, y0, x1, y1 = (
+            int(xmin * width),
+            int(ymin * height),
+            int(xmax * width),
+            int(ymax * height),
+        )
 
         # Draw bounding box
         cv2.rectangle(image, (x0, y0), (x1, y1), (0, 255, 0), 2)
 
         # Draw label and confidence
-        label = labels.get(obj['class_id'], f"ID {obj['class_id']}")
-        confidence = int(obj['score'] * 100)
+        label = labels.get(obj["class_id"], f"ID {obj['class_id']}")
+        confidence = int(obj["score"] * 100)
         text = f"{confidence}% {label}"
-        cv2.putText(image, text, (x0, max(0, y0 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+        cv2.putText(
+            image,
+            text,
+            (x0, max(0, y0 - 10)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (255, 0, 0),
+            2,
+        )
 
     # Draw FPS in the top-left corner
     if fps is not None:
         fps_text = f"FPS: {fps:.2f}"
-        cv2.putText(image, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        cv2.putText(
+            image, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2
+        )
 
     return image
+
 
 # Postprocess outputs to extract bounding boxes, class IDs, and confidence scores
 def detect_objects(interpreter, image, threshold):
@@ -50,25 +68,24 @@ def detect_objects(interpreter, image, threshold):
     output_details = interpreter.get_output_details()
 
     # Run inference
-    interpreter.set_tensor(input_details[0]['index'], image)
+    interpreter.set_tensor(input_details[0]["index"], image)
     interpreter.invoke()
 
     # Extract outputs
-    boxes = interpreter.get_tensor(output_details[0]['index'])[0]
-    class_ids = interpreter.get_tensor(output_details[1]['index'])[0]
-    scores = interpreter.get_tensor(output_details[2]['index'])[0]
-    num_detections = int(interpreter.get_tensor(output_details[3]['index'])[0])
+    boxes = interpreter.get_tensor(output_details[0]["index"])[0]
+    class_ids = interpreter.get_tensor(output_details[1]["index"])[0]
+    scores = interpreter.get_tensor(output_details[2]["index"])[0]
+    num_detections = int(interpreter.get_tensor(output_details[3]["index"])[0])
 
     objs = []
     for i in range(num_detections):
         if scores[i] >= threshold:
-            objs.append({
-                'bbox': boxes[i],
-                'class_id': int(class_ids[i]),
-                'score': scores[i]
-            })
+            objs.append(
+                {"bbox": boxes[i], "class_id": int(class_ids[i]), "score": scores[i]}
+            )
 
     return objs
+
 
 # Capture thread
 def capture_thread(cap, frame_queue, stop_event):
@@ -78,8 +95,11 @@ def capture_thread(cap, frame_queue, stop_event):
             continue
         frame_queue.put(frame)
 
+
 # Inference thread
-def inference_thread(interpreter, labels, frame_queue, result_queue, stop_event, input_size):
+def inference_thread(
+    interpreter, labels, frame_queue, result_queue, stop_event, input_size
+):
     while not stop_event.is_set():
         if frame_queue.empty():
             continue
@@ -87,6 +107,7 @@ def inference_thread(interpreter, labels, frame_queue, result_queue, stop_event,
         input_data = preprocess_image(frame, input_size)
         objs = detect_objects(interpreter, input_data, threshold=0.5)
         result_queue.put((frame, objs))
+
 
 # Main function
 def main():
@@ -99,7 +120,7 @@ def main():
 
     # Load the model
     interpreter = load_model(model_path)
-    input_size = interpreter.get_input_details()[0]['shape'][1:3]
+    input_size = interpreter.get_input_details()[0]["shape"][1:3]
 
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -118,8 +139,13 @@ def main():
     stop_event = threading.Event()
 
     # Start threads
-    capture_thread_handle = threading.Thread(target=capture_thread, args=(cap, frame_queue, stop_event))
-    inference_thread_handle = threading.Thread(target=inference_thread, args=(interpreter, labels, frame_queue, result_queue, stop_event, input_size))
+    capture_thread_handle = threading.Thread(
+        target=capture_thread, args=(cap, frame_queue, stop_event)
+    )
+    inference_thread_handle = threading.Thread(
+        target=inference_thread,
+        args=(interpreter, labels, frame_queue, result_queue, stop_event, input_size),
+    )
 
     capture_thread_handle.start()
     inference_thread_handle.start()
@@ -143,7 +169,7 @@ def main():
             frame = draw_objects(frame, objs, labels, input_size, fps=fps)
             cv2.imshow("Object Detection", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     # Stop threads
