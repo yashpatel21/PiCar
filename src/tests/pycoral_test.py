@@ -11,8 +11,8 @@ from pycoral.utils.edgetpu import run_inference
 
 def main():
     default_model_dir = ''
-    default_model = 'ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite'
-    default_labels = 'coco_labels.txt'
+    default_model = '../../models/mobilenet/ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite'
+    default_labels = '../../models/mobilenet/coco_labels.txt'
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', help='.tflite model path',
                         default=os.path.join(default_model_dir, default_model))

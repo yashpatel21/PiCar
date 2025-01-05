@@ -1,5 +1,7 @@
 #!/bin/bash
 
+export DISPLAY=:0
+
 # Define image and container names
 IMAGE_NAME="picar:latest"
 CONTAINER_NAME="picar-container"
@@ -13,6 +15,7 @@ echo "Running the container..."
 sudo docker run --name $CONTAINER_NAME -it \
     --device /dev/bus/usb \
     --device /dev/video0:/dev/video0 \
+    --device /dev/dri:/dev/dri \
     -e DISPLAY=$DISPLAY \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
     $IMAGE_NAME

@@ -111,8 +111,8 @@ def inference_thread(
 
 # Main function
 def main():
-    model_path = "ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite"
-    label_path = "coco_labels.txt"
+    model_path = "../../models/mobilenet/ssd_mobilenet_v2_coco_quant_postprocess_edgetpu.tflite"
+    label_path = "../../models/mobilenet/coco_labels.txt"
 
     # Load labels
     with open(label_path, "r") as f:

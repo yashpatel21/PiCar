@@ -5,6 +5,8 @@
 
 # Add other initialization commands here if needed
 echo "Running additional initialization tasks..."
+# Activate venv
+source /app/venv/bin/activate
 
 # Execute any additional commands provided to the container
 exec "$@"
