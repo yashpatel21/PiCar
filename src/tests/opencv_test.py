@@ -1,52 +1,50 @@
+from picamera2 import Picamera2
 import cv2
-import time
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 
-def main():
-    # Open the camera
-    cap = cv2.VideoCapture(0)
-    if not cap.isOpened():
-        print("Error: Could not open camera.")
-        return
+# Initialize the Picamera2 object
+picam2 = Picamera2()
+picam2.start()
 
-    # Set camera resolution (optional)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# Set up Matplotlib figure
+fig, ax = plt.subplots()
+ax.axis("off")  # Hide axis for cleaner display
+img_display = ax.imshow([[0]])  # Initialize with an empty image
 
-    print("Press 'q' to exit.")
+# Flag to control the animation loop
+stop_animation = False
 
-    # Initialize FPS tracking
-    fps_start_time = time.time()
-    frame_count = 0
-    fps = 0.0  # Initialize fps to avoid unbound variable error
+# Function to handle key press events
+def on_key(event):
+    global stop_animation
+    if event.key == "q":  # Press 'q' to quit
+        stop_animation = True
+        plt.close()
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Unable to read from camera.")
-            break
+# Connect the key press event to the handler
+fig.canvas.mpl_connect("key_press_event", on_key)
 
-        # Update FPS counter
-        frame_count += 1
-        fps_end_time = time.time()
-        elapsed_time = fps_end_time - fps_start_time
-        if elapsed_time > 1.0:  # Update FPS every second
-            fps = frame_count / elapsed_time
-            fps_start_time = fps_end_time
-            frame_count = 0
+# Update function for Matplotlib animation
+def update(_):
+    if stop_animation:
+        return [img_display]
+    
+    # Capture a frame
+    frame = picam2.capture_array()
 
-        # Draw FPS on the frame
-        fps_text = f"FPS: {fps:.2f}"
-        cv2.putText(frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    # Convert RGBA to RGB for Matplotlib
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
 
-        # Display the frame
-        cv2.imshow("Video Feed", frame)
+    # Update the displayed image
+    img_display.set_data(frame_rgb)
+    return [img_display]
 
-        # Exit on pressing 'q'
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+# Use Matplotlib's FuncAnimation for real-time updates
+ani = FuncAnimation(fig, update, interval=1, cache_frame_data=False)
 
-    cap.release()
-    cv2.destroyAllWindows()
+# Show the video feed
+plt.show()
 
-if __name__ == "__main__":
-    main()
+# Cleanup
+picam2.stop()
