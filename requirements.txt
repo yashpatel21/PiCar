@@ -2,3 +2,7 @@ numpy<2
 opencv-python
 https://github.com/google-coral/pycoral/releases/download/v2.0.0/tflite_runtime-2.5.0.post1-cp39-cp39-linux_aarch64.whl
 https://github.com/google-coral/pycoral/releases/download/v2.0.0/pycoral-2.0.0-cp39-cp39-linux_aarch64.whl
+rpi-libcamera
+rpi-kms
+picamera2
+pygobject
