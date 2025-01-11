@@ -5,8 +5,12 @@ FROM python:3.9-bookworm
 ENV DEBIAN_FRONTEND=noninteractive
 ENV VIRTUAL_ENV=/app/venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
+
+# Set environment variables for GTK
 ENV NO_AT_BRIDGE=1
 ENV GDK_SYNCHRONIZE=1
+ENV GDK_BACKEND=x11
+ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 
 # Set the working directory in the container
 WORKDIR /app
@@ -66,10 +70,6 @@ RUN wget -O /app/apex_latest_single_ep.bin https://github.com/google-coral/libed
 
 # Ensure scripts are executable
 RUN chmod +x /app/fix_coral_usb.sh /app/entrypoint.sh
-
-# Set environment variables for GTK
-ENV GDK_BACKEND=x11
-ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 
 # Create runtime directory for GTK
 RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
