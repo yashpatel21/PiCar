@@ -1,8 +1,34 @@
+# Core dependencies
 numpy<2
 opencv-python
+
+# Coral Edge TPU dependencies
 https://github.com/google-coral/pycoral/releases/download/v2.0.0/tflite_runtime-2.5.0.post1-cp39-cp39-linux_aarch64.whl
 https://github.com/google-coral/pycoral/releases/download/v2.0.0/pycoral-2.0.0-cp39-cp39-linux_aarch64.whl
+
+# Camera dependencies
 rpi-libcamera
 rpi-kms
 picamera2
+
+# GUI
 pygobject
+
+# Robot-hat dependencies
+smbus2
+gpiozero
+pyaudio
+spidev
+pyserial
+pillow
+pygame>=2.1.2
+RPi.GPIO>=0.7.0
+pigpio
+lgpio
+
+# Picar-x dependencies
+readchar
+
+# SunFounder repositories
+git+https://github.com/sunfounder/robot-hat.git@v2.0
+git+https://github.com/sunfounder/picar-x.git@v2.0
