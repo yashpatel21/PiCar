@@ -5,7 +5,7 @@ export DISPLAY=:0
 xhost +local:root
 xhost +local:docker
 
-# Define image and container names
+# Define container configuration
 IMAGE_NAME="picar:latest"
 CONTAINER_NAME="picar-container"
 
@@ -17,7 +17,7 @@ sudo docker build -t $IMAGE_NAME -f docker/Dockerfile .
 echo "Removing existing container (if any)..."
 sudo docker rm -f $CONTAINER_NAME 2>/dev/null || true
 
-# Run the container with all necessary device mappings and configurations
+# Run the container with hardware access
 echo "Running the container..."
 sudo docker run --name $CONTAINER_NAME -it \
     --device /dev/bus/usb \
@@ -38,7 +38,7 @@ sudo docker run --name $CONTAINER_NAME -it \
     --ipc=host \
     $IMAGE_NAME
 
-# Clean up unused containers and images
+# Cleanup
 echo "Cleaning up dangling images and stopped containers..."
 sudo docker container prune -f
 sudo docker image prune -f

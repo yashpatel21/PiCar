@@ -1,13 +1,23 @@
 #!/bin/bash
 
-# Run the interface setup
-/app/setup_interfaces.sh
+# Exit on any error
+set -e
 
-# Run the Coral USB firmware fix
-/app/fix_coral_usb.sh
+# Initialize container environment
+echo "Initializing container environment..."
+if ! /app/init_container.sh; then
+    echo "Error: Container initialization failed"
+    exit 1
+fi
 
-# Activate venv
+# Initialize Edge TPU
+echo "Initializing Edge TPU..."
+/app/fix_coral_usb.sh || echo "Warning: Edge TPU initialization failed but continuing..."
+
+# Activate Python virtual environment
+echo "Activating Python virtual environment..."
 source /app/venv/bin/activate
 
-# Execute any additional commands provided to the container
+# Execute container command
+echo "Container setup complete..."
 exec "$@"
