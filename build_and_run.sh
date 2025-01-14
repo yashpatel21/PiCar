@@ -13,9 +13,11 @@ CONTAINER_NAME="picar-container"
 echo "Building the image..."
 sudo docker build -t $IMAGE_NAME -f docker/Dockerfile .
 
-# Remove any existing container
-echo "Removing existing container (if any)..."
-sudo docker rm -f $CONTAINER_NAME 2>/dev/null || true
+# Check if a container with the same name exists
+if sudo docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+    echo "Stopping and removing existing container..."
+    sudo docker rm -f $CONTAINER_NAME
+fi
 
 # Run the container with hardware access
 echo "Running the container..."

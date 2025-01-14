@@ -51,7 +51,7 @@ class VehicleController:
         self.stopping_time = 0.5     # Time to come to complete stop
         
         # Camera parameters
-        self.default_camera_tilt = -20.0  # Default downward angle for optimal view
+        self.default_camera_tilt = -10.0  # Default downward angle for optimal view
         self.default_camera_pan = 7.0     # Center position
         self.max_camera_angle = 30.0      # Maximum camera angle in any direction
         

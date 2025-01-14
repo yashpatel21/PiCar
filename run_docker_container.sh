@@ -1,26 +1,24 @@
 #!/bin/bash
 
+# Configure display for GUI applications
 export DISPLAY=:0
+xhost +local:root
+xhost +local:docker
 
-# Define image and container names
+# Define container configuration
 IMAGE_NAME="picar:latest"
 CONTAINER_NAME="picar-container"
 
-# Remove existing container if it exists
-echo "Removing existing container (if any)..."
-sudo docker rm -f $CONTAINER_NAME 2>/dev/null || true
+# Check if the container exists
+if ! sudo docker ps -a --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+    echo "Error: Container '${CONTAINER_NAME}' does not exist. Please run build_and_run.sh first."
+    exit 1
+fi
 
-# Run the container
-echo "Running the container..."
-sudo docker run --name $CONTAINER_NAME -it \
-    --device /dev/bus/usb \
-    --device /dev/video0:/dev/video0 \
-    --device /dev/dri:/dev/dri \
-    -e DISPLAY=$DISPLAY \
-    -v /tmp/.X11-unix:/tmp/.X11-unix \
-    $IMAGE_NAME
-
-# Clean up dangling images and stopped containers
-echo "Cleaning up dangling images and stopped containers..."
-sudo docker container prune -f
-sudo docker image prune -f
+# Check if the container is already running
+if sudo docker ps --format '{{.Names}}' | grep -Eq "^${CONTAINER_NAME}\$"; then
+    echo "Container '${CONTAINER_NAME}' is already running."
+else
+    echo "Starting the container..."
+    sudo docker start -i $CONTAINER_NAME
+fi
