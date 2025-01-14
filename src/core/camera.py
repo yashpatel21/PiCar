@@ -68,6 +68,9 @@ class CameraManager:
             if current_time - last_frame_time >= frame_interval:
                 frame = self.camera.capture_array()  # BGR format
                 
+                # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
                 # Update frame queue
                 if self.frame_queue.full():
                     self.frame_queue.get()

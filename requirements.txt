@@ -32,3 +32,9 @@ readchar
 # SunFounder repositories
 git+https://github.com/sunfounder/robot-hat.git@v2.0
 git+https://github.com/sunfounder/picar-x.git@v2.0
+
+# Web app dependencies
+flask
+flask-cors
+flask-socketio
+gunicorn

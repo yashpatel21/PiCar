@@ -1,0 +1,628 @@
+<!-- src/web/templates/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PiCar Self-Driving System</title>
+    <style>
+        /* Base styling for clean, modern look */
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f0f0f0;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1800px;
+            margin: 0 auto;
+        }
+        
+        /* Main control panel styling */
+        .controls {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+        }
+        
+        /* Parameter adjustment section */
+        .parameter-controls {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .parameter-group {
+            margin-bottom: 20px;
+        }
+        
+        .parameter-group h3 {
+            margin-top: 0;
+            color: #2196F3;
+            border-bottom: 2px solid #eee;
+            padding-bottom: 10px;
+        }
+        
+        .parameter-row {
+            display: flex;
+            align-items: center;
+            margin-bottom: 15px;
+            padding: 10px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        
+        .parameter-label {
+            flex: 0 0 200px;
+            font-weight: bold;
+        }
+        
+        .parameter-value {
+            flex: 0 0 50px;
+            text-align: center;
+            font-weight: bold;
+            color: #2196F3;
+        }
+        
+        .parameter-slider {
+            flex: 1;
+            margin: 0 15px;
+        }
+        
+        /* Video feed layouts */
+        .video-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .video-container {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .video-container h2 {
+            margin-top: 0;
+            color: #2196F3;
+            font-size: 1.2em;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .video-feed {
+            width: 100%;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        
+        /* Button styling */
+        .button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .button:active {
+            transform: scale(0.98);
+        }
+        
+        .button-start {
+            background-color: #4CAF50;
+            color: white;
+        }
+        
+        .button-stop {
+            background-color: #f44336;
+            color: white;
+        }
+        
+        .button-debug {
+            background-color: #2196F3;
+            color: white;
+        }
+        
+        /* Stream toggle buttons */
+        .stream-toggles {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin: 10px 0;
+        }
+        
+        .stream-toggle {
+            padding: 8px 16px;
+            border: 2px solid #2196F3;
+            border-radius: 4px;
+            background: transparent;
+            color: #2196F3;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .stream-toggle.active {
+            background: #2196F3;
+            color: white;
+        }
+        
+        /* Metrics display */
+        .metrics-panel {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .metric-item {
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            text-align: center;
+        }
+        
+        .metric-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-bottom: 5px;
+        }
+        
+        .metric-value {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #2196F3;
+        }
+        
+        /* Status indicators */
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.9em;
+            margin-left: 10px;
+        }
+        
+        .status-active {
+            background-color: #4CAF50;
+            color: white;
+        }
+        
+        .status-inactive {
+            background-color: #f44336;
+            color: white;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Main Control Panel -->
+        <div class="controls">
+            <button id="toggleAutonomous" class="button button-start">
+                Start Autonomous Mode
+            </button>
+            
+            <button id="toggleDebug" class="button button-debug">
+                Toggle Debug Views
+            </button>
+            
+            <div id="systemStatus">
+                <!-- Status indicators will be updated via JavaScript -->
+            </div>
+        </div>
+        
+        <!-- Parameter Controls -->
+        <div class="parameter-controls">
+            <div class="parameter-group">
+                <h3>Lane Detection Parameters</h3>
+                
+                <div class="parameter-row">
+                    <div class="parameter-label">Adaptive Block Size</div>
+                    <input type="range" class="parameter-slider"
+                           id="adaptive_block_size" 
+                           data-param="adaptive_block_size"
+                           min="3" max="99" step="2" value="45">
+                    <div class="parameter-value" id="adaptive_block_size_value">45</div>
+                </div>
+                
+                <div class="parameter-row">
+                    <div class="parameter-label">Adaptive Offset</div>
+                    <input type="range" class="parameter-slider"
+                           id="adaptive_offset"
+                           data-param="adaptive_offset"
+                           min="0" max="50" value="25">
+                    <div class="parameter-value" id="adaptive_offset_value">25</div>
+                </div>
+                
+                <div class="parameter-row">
+                    <div class="parameter-label">Blur Kernel Size</div>
+                    <input type="range" class="parameter-slider"
+                           id="blur_kernel_size" min="3" max="11" step="2" value="7"
+                           data-param="blur_kernel_size">
+                    <div class="parameter-value" id="blur_kernel_size_value">7</div>
+                </div>
+                
+                <div class="parameter-row">
+                    <div class="parameter-label">Dilate Iterations</div>
+                    <input type="range" class="parameter-slider"
+                           id="dilate_iterations" min="0" max="3" value="1"
+                           data-param="dilate_iterations">
+                    <div class="parameter-value" id="dilate_iterations_value">1</div>
+                </div>
+                
+                <div class="parameter-row">
+                    <div class="parameter-label">Erode Iterations</div>
+                    <input type="range" class="parameter-slider"
+                           id="erode_iterations" min="0" max="3" value="1"
+                           data-param="erode_iterations">
+                    <div class="parameter-value" id="erode_iterations_value">1</div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Video Feeds -->
+        <div class="stream-toggles">
+            <button class="stream-toggle active" data-stream="binary">Binary View</button>
+            <button class="stream-toggle" data-stream="roi">ROI View</button>
+            <button class="stream-toggle" data-stream="points">Points View</button>
+        </div>
+        
+        <div class="video-grid">
+            <!-- Main View (always visible) -->
+            <div class="video-container">
+                <h2>Main View - Lane Detection</h2>
+                <img class="video-feed" id="main-feed" alt="Main view">
+            </div>
+            
+            <!-- Debug Views (initially hidden except binary) -->
+            <div class="video-container" id="binaryView" style="display: block;">
+                <h2>Binary Threshold Analysis</h2>
+                <img class="video-feed" id="binary-feed" alt="Binary view">
+            </div>
+            
+            <div class="video-container" id="roiView" style="display: none;">
+                <h2>Region of Interest</h2>
+                <img class="video-feed" id="roi-feed" alt="ROI view">
+            </div>
+            
+            <div class="video-container" id="pointsView" style="display: none;">
+                <h2>Point Detection</h2>
+                <img class="video-feed" id="points-feed" alt="Points view">
+            </div>
+        </div>
+        
+        <!-- Metrics Panel -->
+        <div class="metrics-panel">
+            <h3>System Metrics</h3>
+            <div id="metrics" class="metrics-grid">
+                <!-- Metrics will be populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize Socket.IO connection first
+        const socket = io();
+        
+        // Map of stream names to their image elements
+        const streamFeeds = {
+            'main': document.getElementById('main-feed'),
+            'binary': document.getElementById('binary-feed'),
+            'roi': document.getElementById('roi-feed'),
+            'points': document.getElementById('points-feed')
+        };
+        
+        // Initialize active streams
+        let activeStreams = new Set(['main', 'binary']);
+        
+        // State management
+        let autonomousEnabled = false;
+        let debugEnabled = true;
+        
+        // Initialize parameter controls
+        function initializeParameters() {
+            const sliders = document.querySelectorAll('.parameter-slider');
+            sliders.forEach(slider => {
+                slider.addEventListener('input', function() {
+                    const param = this.dataset.param;
+                    const value = parseInt(this.value);
+                    
+                    // Update display immediately for responsiveness
+                    const valueDisplay = document.getElementById(`${param}_value`);
+                    if (valueDisplay) {
+                        valueDisplay.textContent = value;
+                    }
+                    
+                    // Send update to server
+                    updateConfig(param, value);
+                });
+            });
+        }
+        
+        // Update parameter display value
+        function updateParameterValue(slider) {
+            const valueDisplay = document.getElementById(`${slider.id}_value`);
+            if (valueDisplay) {
+                valueDisplay.textContent = slider.value;
+            }
+        }
+        
+        // Send configuration update to server
+        function updateConfig(param, value) {
+            console.log(`Updating config: ${param} = ${value}`); // Debug log
+            socket.emit('update_config', { param, value });
+        }
+        
+        // Update metrics display
+        function updateMetrics(metrics) {
+            const metricsDiv = document.getElementById('metrics');
+            metricsDiv.innerHTML = `
+                <div class="metric-item">
+                    <div class="metric-label">FPS</div>
+                    <div class="metric-value">${metrics.processing_fps.toFixed(1)}</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Lane Offset</div>
+                    <div class="metric-value">${metrics.center_offset.toFixed(1)}px</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Detection Status</div>
+                    <div class="metric-value">${metrics.detection_status}</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Width Confidence</div>
+                    <div class="metric-value">${(metrics.lane_width_confidence * 100).toFixed(1)}%</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Steering Angle</div>
+                    <div class="metric-value">${metrics.steering_angle.toFixed(1)}°</div>
+                </div>
+            `;
+        }
+        
+        // Update system status display
+        function updateStatusDisplay() {
+            const statusDiv = document.getElementById('systemStatus');
+            statusDiv.innerHTML = `
+                <span class="status-indicator ${autonomousEnabled ? 'status-active' : 'status-inactive'}">
+                    ${autonomousEnabled ? 'Autonomous Active' : 'Manual Control'}
+                </span>
+                <span class="status-indicator ${debugEnabled ? 'status-active' : 'status-inactive'}">
+                    Debug Mode ${debugEnabled ? 'On' : 'Off'}
+                </span>
+            `;
+        }
+        
+        // Toggle stream visibility
+        function updateStreamVisibility() {
+            const containers = {
+                'binary': document.getElementById('binaryView'),
+                'roi': document.getElementById('roiView'),
+                'points': document.getElementById('pointsView')
+            };
+            
+            for (const [stream, container] of Object.entries(containers)) {
+                if (container) {
+                    container.style.display = activeStreams.has(stream) ? 'block' : 'none';
+                }
+            }
+            
+            // Update toggle buttons
+            document.querySelectorAll('.stream-toggle').forEach(button => {
+                const stream = button.dataset.stream;
+                button.classList.toggle('active', activeStreams.has(stream));
+            });
+        }
+        
+        // Button event handlers
+        document.getElementById('toggleAutonomous').onclick = async () => {
+            const response = await fetch('/api/toggle_autonomous', {method: 'POST'});
+            const data = await response.json();
+            autonomousEnabled = data.autonomous_enabled;
+            
+            const button = document.getElementById('toggleAutonomous');
+            button.textContent = autonomousEnabled ? 'Stop Autonomous Mode' : 'Start Autonomous Mode';
+            button.className = autonomousEnabled ? 'button button-stop' : 'button button-start';
+            
+            updateStatusDisplay();
+        };
+        
+        document.getElementById('toggleDebug').onclick = async () => {
+            const response = await fetch('/api/toggle_debug', {method: 'POST'});
+            const data = await response.json();
+            debugEnabled = data.debug_enabled;
+            updateStatusDisplay();
+        };
+        
+        // Stream toggle handling
+        document.querySelectorAll('.stream-toggle').forEach(button => {
+            button.addEventListener('click', function() {
+                const stream = this.dataset.stream;
+                console.log('Toggling stream:', stream); // Debug log
+                socket.emit('toggle_stream', { stream });
+            });
+        });
+
+        // Handle stream updates from server
+        socket.on('stream_update', (data) => {
+            console.log('Stream update received:', data); // Debug log
+            activeStreams = new Set(data.active_streams);
+            
+            // Update button states and container visibility
+            document.querySelectorAll('.stream-toggle').forEach(button => {
+                const stream = button.dataset.stream;
+                const isActive = activeStreams.has(stream);
+                button.classList.toggle('active', isActive);
+                
+                const container = document.getElementById(`${stream}View`);
+                if (container) {
+                    container.style.display = isActive ? 'block' : 'none';
+                }
+            });
+        });
+
+        // Handle frame updates
+        socket.on('frame_update', (data) => {
+            const feed = streamFeeds[data.stream];
+            if (feed) {
+                feed.src = 'data:image/jpeg;base64,' + data.frame;
+            }
+        });
+
+        // Request frames periodically
+        function requestFrames() {
+            // Request main feed
+            socket.emit('request_frame', { stream: 'main' });
+            
+            // Request active debug streams
+            activeStreams.forEach(stream => {
+                if (stream !== 'main') {
+                    socket.emit('request_frame', { stream });
+                }
+            });
+        }
+
+        // Start frame requests
+        setInterval(requestFrames, 33); // ~30 FPS
+
+        // Initialize system state and start updates
+        async function initialize() {
+            // Get initial system state
+            const response = await fetch('/api/status');
+            const data = await response.json();
+            
+            // Update UI with initial values
+            autonomousEnabled = data.autonomous_enabled;
+            debugEnabled = data.debug_enabled;
+            activeStreams = new Set(data.streams.active_streams);
+            
+            // Update UI elements
+            updateStatusDisplay();
+            updateStreamVisibility();
+            
+            // Set initial parameter values
+            if (data.config) {
+                Object.entries(data.config).forEach(([param, value]) => {
+                    const slider = document.getElementById(param);
+                    if (slider) {
+                        slider.value = value;
+                        updateParameterValue(slider);
+                    }
+                });
+            }
+            
+            // Start periodic updates
+            startPeriodicUpdates();
+        }
+
+        // Set up periodic updates for metrics and status
+        function startPeriodicUpdates() {
+            // Update metrics every 100ms
+            setInterval(async () => {
+                try {
+                    const response = await fetch('/api/metrics');
+                    const metrics = await response.json();
+                    updateMetrics(metrics);
+                } catch (error) {
+                    console.error('Error updating metrics:', error);
+                }
+            }, 100);
+            
+            // Update system status every second
+            setInterval(async () => {
+                try {
+                    const response = await fetch('/api/status');
+                    const data = await response.json();
+                    
+                    autonomousEnabled = data.autonomous_enabled;
+                    debugEnabled = data.debug_enabled;
+                    updateStatusDisplay();
+                    
+                    // Update stream status
+                    if (data.streams) {
+                        activeStreams = new Set(data.streams.active_streams);
+                        updateStreamVisibility();
+                    }
+                } catch (error) {
+                    console.error('Error updating status:', error);
+                }
+            }, 1000);
+        }
+
+        // Error handling for video streams
+        document.querySelectorAll('.video-feed').forEach(feed => {
+            feed.onerror = function() {
+                console.error('Error loading video feed:', this.src);
+                // Attempt to reload the stream after a short delay
+                setTimeout(() => {
+                    this.src = this.src;
+                }, 1000);
+            };
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(event) {
+            // Space bar toggles autonomous mode
+            if (event.code === 'Space') {
+                event.preventDefault();
+                document.getElementById('toggleAutonomous').click();
+            }
+            // 'D' key toggles debug mode
+            if (event.code === 'KeyD') {
+                event.preventDefault();
+                document.getElementById('toggleDebug').click();
+            }
+        });
+
+        // Initialize everything when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeParameters();
+            initialize();
+        });
+
+        // Add config update handler
+        socket.on('config_update', (data) => {
+            console.log('Config update received:', data); // Debug log
+            
+            if (data.success) {
+                // Update all sliders with new values
+                Object.entries(data.config).forEach(([param, value]) => {
+                    const slider = document.getElementById(param);
+                    const valueDisplay = document.getElementById(`${param}_value`);
+                    if (slider) {
+                        slider.value = value;
+                    }
+                    if (valueDisplay) {
+                        valueDisplay.textContent = value;
+                    }
+                });
+            } else {
+                console.error('Config update failed:', data.error);
+            }
+        });
+    </script>
+</body>
+</html>

@@ -34,6 +34,7 @@ sudo docker run --name $CONTAINER_NAME -it \
     -v /tmp/.X11-unix:/tmp/.X11-unix:rw \
     -v /run/udev:/run/udev:ro \
     -v "$(pwd)/src:/app/src" \
+    --network host \
     --privileged \
     --ipc=host \
     $IMAGE_NAME
