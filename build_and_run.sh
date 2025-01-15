@@ -9,6 +9,11 @@ xhost +local:docker
 IMAGE_NAME="picar:latest"
 CONTAINER_NAME="picar-container"
 
+# Pre-cleanup: Remove dangling images and stopped containers
+echo "Performing pre-cleanup of dangling images and stopped containers..."
+sudo docker container prune -f
+sudo docker image prune -f
+
 # Build the Docker image
 echo "Building the image..."
 sudo docker build -t $IMAGE_NAME -f docker/Dockerfile .
@@ -40,8 +45,3 @@ sudo docker run --name $CONTAINER_NAME -it \
     --privileged \
     --ipc=host \
     $IMAGE_NAME
-
-# Cleanup
-echo "Cleaning up dangling images and stopped containers..."
-sudo docker container prune -f
-sudo docker image prune -f

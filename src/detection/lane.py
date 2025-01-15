@@ -257,105 +257,218 @@ class LaneDetector(Detector):
         
         return points
 
-    def _find_lane_points(self, binary_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, str]:
-        """Enhanced lane point detection that properly handles both straight and curved sections.
+    def _analyze_curve_direction(self, curve: np.ndarray) -> Tuple[float, float, np.ndarray, np.ndarray]:
+        """Analyze the direction and key points of a curve.
         
-        This method implements a sophisticated lane detection approach that:
-        1. Identifies potential lane lines from the binary image
-        2. Validates detections using geometric properties
-        3. Handles both single and dual lane scenarios
-        4. Prevents false detections from thick lines
+        This method examines both the overall direction of the curve and its key points
+        to help determine if detected curves represent valid separate lanes or false
+        duplicates of the same lane.
         
         Args:
-            binary_img: Thresholded binary image where white pixels represent potential lane lines
+            curve: Array of points forming the curve
             
         Returns:
             Tuple containing:
-            - left_points: numpy array of points for left lane (empty if not detected)
-            - right_points: numpy array of points for right lane (empty if not detected)
-            - detection_status: string indicating what was detected ('left', 'right', 'both', or 'none')
+            - dx: x component of direction vector
+            - dy: y component of direction vector
+            - bottom_point: average position of bottom curve section
+            - top_point: average position of top curve section
         """
-        # Get the starting y-coordinate for our ROI
+        if len(curve) < 2:
+            return (0.0, 0.0, None, None)
+        
+        # Use the bottom 25% and top 25% of points for stable direction calculation
+        n_points = len(curve)
+        bottom_quarter = curve[int(0.75*n_points):]
+        top_quarter = curve[:int(0.25*n_points)]
+        
+        # Calculate average points
+        bottom_point = np.mean(bottom_quarter, axis=0)
+        top_point = np.mean(top_quarter, axis=0)
+        
+        # Calculate direction vector
+        dx = top_point[0] - bottom_point[0]
+        dy = top_point[1] - bottom_point[1]
+        
+        # Normalize direction vector
+        magnitude = np.sqrt(dx*dx + dy*dy)
+        if magnitude > 0:
+            dx /= magnitude
+            dy /= magnitude
+        
+        return (dx, dy, bottom_point, top_point)
+
+    def _validate_curves(self, left_curve: np.ndarray, right_curve: np.ndarray) -> bool:
+        """Validates if two detected curves can physically represent separate lanes.
+        
+        This method implements strict geometric validation based on the physical reality
+        of lane lines on a track. Key principles:
+        1. Valid lanes must maintain a minimum separation throughout their length
+        2. Curves that are too close together must be from the same line
+        3. Parallel curves in the same direction must have significant separation
+        
+        Args:
+            left_curve: Points forming the left curve
+            right_curve: Points forming the right curve
+            
+        Returns:
+            Boolean indicating if these are valid separate lanes
+        """
+        if left_curve is None or right_curve is None:
+            return True
+        
+        # Constants for validation
+        min_lane_separation = 50     # Minimum valid separation between lanes
+        parallel_threshold = 0.85    # Cosine similarity threshold for parallel curves
+        
+        # Calculate curve directions using multiple points for stability
+        def get_curve_direction(curve):
+            if len(curve) < 4:  # Need enough points for stable direction
+                return None
+            
+            # Use bottom quarter of points
+            bottom_points = curve[-len(curve)//4:]
+            # Use top quarter of points
+            top_points = curve[:len(curve)//4]
+            
+            if len(bottom_points) == 0 or len(top_points) == 0:
+                return None
+                
+            # Calculate average points
+            bottom_avg = np.mean(bottom_points, axis=0)
+            top_avg = np.mean(top_points, axis=0)
+            
+            # Get direction vector
+            dx = top_avg[0] - bottom_avg[0]
+            dy = top_avg[1] - bottom_avg[1]
+            
+            # Normalize
+            mag = np.sqrt(dx*dx + dy*dy)
+            if mag == 0:
+                return None
+                
+            return np.array([dx/mag, dy/mag])
+        
+        # Get directions
+        left_dir = get_curve_direction(left_curve)
+        right_dir = get_curve_direction(right_curve)
+        
+        if left_dir is None or right_dir is None:
+            return False
+        
+        # Check how parallel the curves are using dot product
+        dot_product = np.dot(left_dir, right_dir)
+        
+        # Calculate separations along the curves
+        separations = []
+        for i in range(min(len(left_curve), len(right_curve))):
+            sep = abs(right_curve[i][0] - left_curve[i][0])
+            separations.append(sep)
+        
+        min_separation = min(separations)
+        avg_separation = np.mean(separations)
+        
+        # Key geometric validation checks:
+        
+        # 1. If curves are too close at any point, they can't be separate lanes
+        if min_separation < min_lane_separation:
+            return False
+        
+        # 2. If curves are very parallel (going in similar direction)
+        if dot_product > parallel_threshold:
+            # They must maintain significant separation
+            if avg_separation < min_lane_separation * 1.5:
+                return False
+            
+            # Check for consistent separation
+            separation_std = np.std(separations)
+            if separation_std > avg_separation * 0.3:  # More than 30% variation
+                return False
+        
+        # 3. Check for intersection or crossing
+        # If separations are decreasing when they should be stable or increasing,
+        # curves might be crossing
+        if len(separations) > 2:
+            separation_diff = np.diff(separations)
+            if np.any(separation_diff < -min_lane_separation * 0.2):  # Getting too close too quickly
+                return False
+        
+        return True
+
+    def _find_lane_points(self, binary_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, str]:
+        """Enhanced lane point detection that properly handles both single and dual lane scenarios.
+        
+        This implementation combines histogram-based point detection with geometric validation.
+        It follows these key principles:
+        1. When two lines are visible, they must maintain reasonable separation
+        2. A single detected line is identified as left/right based on its position
+        3. Lines too close together are treated as duplicate detections of the same line
+        
+        Args:
+            binary_img: Binary threshold image where white pixels represent potential lanes
+            
+        Returns:
+            Tuple containing:
+            - left_points: Points detected for left lane (empty if not detected)
+            - right_points: Points detected for right lane (empty if not detected)
+            - detection_status: String indicating detection result ('left', 'right', 'both', 'none')
+        """
+        # Get starting y-coordinate for our ROI
         y_start = int(self.height * 0.4)
         
         # Find all white pixels in the binary image
         nonzero_y, nonzero_x = binary_img.nonzero()
         
-        # Take histogram of bottom half of the image to find starting points
+        # Take histogram of bottom half for initial lane base points
         histogram = np.sum(binary_img[binary_img.shape[0]//2:, :], axis=0)
         midpoint = binary_img.shape[1] // 2
         
-        # Split histogram into left and right halves
+        # Look for peaks in left and right halves of the histogram
         left_hist = histogram[:midpoint]
         right_hist = histogram[midpoint:]
-        
-        # Get the strength of peaks in each half
         left_max = np.max(left_hist)
         right_max = np.max(right_hist)
         
-        # Parameters for lane detection
-        min_peak_value = 20          # Minimum peak height to be considered a lane
-        min_peak_ratio = 0.4         # Weaker peak must be at least 40% of stronger peak
+        # Parameters for detection
+        min_peak_value = 20          # Minimum histogram peak height
         window_height = binary_img.shape[0] // 9  # Height of search windows
         margin = 80                  # Width of search windows
-        minpix = 15                  # Minimum pixels needed to recenter window
-        
-        # Initialize lane base points
-        left_base = None
-        right_base = None
+        minpix = 15                  # Minimum pixels to recenter window
         
         # Only accept peaks that are strong enough
-        if left_max > min_peak_value:
-            left_base = np.argmax(left_hist)
-            
-        if right_max > min_peak_value:
-            right_base = midpoint + np.argmax(right_hist)
-        
-        # If we found both peaks, validate their relative strengths
-        if left_base is not None and right_base is not None:
-            peak_ratio = min(left_max, right_max) / max(left_max, right_max)
-            if peak_ratio < min_peak_ratio:
-                # Peaks are too different in strength - likely one is noise
-                # Keep only the stronger peak
-                if left_max > right_max:
-                    right_base = None
-                else:
-                    left_base = None
+        left_base = None if left_max < min_peak_value else np.argmax(left_hist)
+        right_base = None if right_max < min_peak_value else midpoint + np.argmax(right_hist)
         
         # Lists to store detected lane points
-        left_points = []
-        right_points = []
+        left_lane_points = []
+        right_lane_points = []
         
-        # Track left lane points if we found a valid starting point
+        # Track points for left lane if base found
         if left_base is not None:
             current_x = left_base
-            
-            # Use sliding windows moving upward through the image
             for window in range(9):
-                # Calculate window boundaries
+                # Define window boundaries
                 win_y_low = binary_img.shape[0] - (window + 1) * window_height
                 win_y_high = binary_img.shape[0] - window * window_height
                 win_x_low = max(0, current_x - margin)
                 win_x_high = min(binary_img.shape[1], current_x + margin)
                 
-                # Find points in the window
+                # Find points in window
                 good_inds = ((nonzero_y >= win_y_low) & 
                             (nonzero_y < win_y_high) & 
                             (nonzero_x >= win_x_low) & 
                             (nonzero_x < win_x_high)).nonzero()[0]
                 
-                # If we found enough points, recenter the window
+                # If we found enough points, recenter window
                 if len(good_inds) > minpix:
                     current_x = int(np.mean(nonzero_x[good_inds]))
-                    # Add points to our list
                     points = np.column_stack((nonzero_x[good_inds], 
                                             nonzero_y[good_inds] + y_start))
-                    left_points.extend(points)
+                    left_lane_points.extend(points)
         
-        # Track right lane points with the same process
+        # Track points for right lane if base found
         if right_base is not None:
             current_x = right_base
-            
             for window in range(9):
                 win_y_low = binary_img.shape[0] - (window + 1) * window_height
                 win_y_high = binary_img.shape[0] - window * window_height
@@ -371,24 +484,42 @@ class LaneDetector(Detector):
                     current_x = int(np.mean(nonzero_x[good_inds]))
                     points = np.column_stack((nonzero_x[good_inds], 
                                             nonzero_y[good_inds] + y_start))
-                    right_points.extend(points)
+                    right_lane_points.extend(points)
         
-        # Convert lists to numpy arrays
-        left_points = np.array(left_points) if left_points else np.array([])
-        right_points = np.array(right_points) if right_points else np.array([])
+        # Convert to numpy arrays
+        left_points = np.array(left_lane_points) if len(left_lane_points) > 0 else np.array([])
+        right_points = np.array(right_lane_points) if len(right_lane_points) > 0 else np.array([])
         
-        # If we found points for both lanes, validate their geometric relationship
+        # If we detected both lanes, validate their geometric relationship
         if len(left_points) > minpix and len(right_points) > minpix:
-            # Fit preliminary curves to check geometry
+            # Fit preliminary curves for geometric validation
             left_curve = self._fit_curve(left_points)
             right_curve = self._fit_curve(right_points)
             
-            if not self._validate_curves(left_curve, right_curve):
-                # Invalid geometry - keep only the lane with more points
-                if len(left_points) > len(right_points):
-                    right_points = np.array([])
-                else:
-                    left_points = np.array([])
+            if left_curve is not None and right_curve is not None:
+                # Validate the curves aren't too close together
+                if not self._validate_curves(left_curve, right_curve):
+                    # Invalid geometry - keep only the stronger detection
+                    if left_max > right_max:
+                        # Left detection is stronger
+                        right_points = np.array([])
+                    else:
+                        # Right detection is stronger
+                        left_points = np.array([])
+        
+        # When we have only one set of points, validate its position
+        elif len(left_points) > minpix or len(right_points) > minpix:
+            points = left_points if len(left_points) > minpix else right_points
+            # Check if points are on the correct side
+            avg_x = np.mean(points[:, 0])
+            if avg_x < midpoint and len(right_points) > 0:
+                # Points are on left side but were classified as right lane
+                left_points = right_points
+                right_points = np.array([])
+            elif avg_x >= midpoint and len(left_points) > 0:
+                # Points are on right side but were classified as left lane
+                right_points = left_points
+                left_points = np.array([])
         
         # Determine final detection status
         if len(left_points) > minpix and len(right_points) > minpix:
@@ -401,112 +532,6 @@ class LaneDetector(Detector):
             detection_status = 'none'
         
         return left_points, right_points, detection_status
-
-    def _validate_curves(self, left_curve: np.ndarray, right_curve: np.ndarray) -> bool:
-        """Validates detected curves based on geometric properties and relationships.
-        
-        Uses the fundamental geometry of road lanes to determine if detected curves
-        could represent real lanes. Key principle: when curves go in the same direction,
-        they must maintain a significant separation to be considered separate lanes.
-        """
-        if left_curve is None or right_curve is None:
-            return True
-            
-        # Constants for validation
-        min_expected_separation = 50  # Minimum pixels between valid lanes
-        min_direction_diff = 0.3      # Minimum difference in direction vectors
-        
-        # Get direction vectors (from bottom to top of curves)
-        def get_curve_direction(curve):
-            if len(curve) < 2:
-                return None
-                
-            # Use multiple points to get a more stable direction
-            bottom_section = curve[-3:]  # Last 3 points
-            top_section = curve[:3]      # First 3 points
-            
-            if len(bottom_section) < 1 or len(top_section) < 1:
-                return None
-                
-            # Calculate average points
-            bottom_x = np.mean(bottom_section[:, 0])
-            bottom_y = np.mean(bottom_section[:, 1])
-            top_x = np.mean(top_section[:, 0])
-            top_y = np.mean(top_section[:, 1])
-            
-            # Get direction vector
-            dx = top_x - bottom_x
-            dy = top_y - bottom_y
-            
-            # Normalize the vector
-            magnitude = np.sqrt(dx*dx + dy*dy)
-            if magnitude == 0:
-                return None
-                
-            return dx/magnitude, dy/magnitude
-        
-        # Get directions for both curves
-        left_dir = get_curve_direction(left_curve)
-        right_dir = get_curve_direction(right_curve)
-        
-        if left_dir is None or right_dir is None:
-            return False
-        
-        # Calculate how parallel the curves are
-        dot_product = left_dir[0]*right_dir[0] + left_dir[1]*right_dir[1]
-        
-        # Calculate separation between curves
-        separations = []
-        for i in range(min(len(left_curve), len(right_curve))):
-            separation = abs(right_curve[i][0] - left_curve[i][0])
-            separations.append(separation)
-        
-        if not separations:
-            return False
-            
-        avg_separation = np.mean(separations)
-        
-        # Key validation logic:
-        # 1. If both curves are going right (positive x direction)
-        if left_dir[0] > 0 and right_dir[0] > 0:
-            # They must be well-separated to be valid lanes
-            if avg_separation < min_expected_separation:
-                return False
-            # If they're very parallel (similar direction), require even more separation
-            if dot_product > 0.9:  # Very parallel
-                return avg_separation > min_expected_separation * 1.5
-        
-        # 2. If both curves are going left (negative x direction)
-        if left_dir[0] < 0 and right_dir[0] < 0:
-            if avg_separation < min_expected_separation:
-                return False
-            if dot_product > 0.9:
-                return avg_separation > min_expected_separation * 1.5
-        
-        return True
-
-    def _validate_detection(self, left_points: np.ndarray, 
-                          right_points: np.ndarray) -> bool:
-        """Validate that detected lines are actually separate lanes.
-        
-        Args:
-            left_points: Points detected as left lane
-            right_points: Points detected as right lane
-            
-        Returns:
-            True if lines are distinct, False if likely same line
-        """
-        if len(left_points) == 0 or len(right_points) == 0:
-            return True
-            
-        min_separation = float('inf')
-        for left_point in left_points:
-            for right_point in right_points:
-                if abs(left_point[1] - right_point[1]) < 10:
-                    separation = abs(left_point[0] - right_point[0])
-                    min_separation = min(min_separation, separation)
-        
-        return min_separation > self.config['line_thickness_threshold']
 
     def _fit_curve(self, points: np.ndarray) -> Optional[np.ndarray]:
         """Fit a smooth curve to detected lane points using polynomial regression.
