@@ -33,10 +33,9 @@ class LaneVisualizer:
         
         # Color scheme for different visualization elements
         self.colors = {
-            'detected_lane': (0, 255, 0),     # Green for confirmed lanes
-            'estimated_lane': (0, 165, 255),   # Orange for estimated lanes
-            'center_line': (0, 0, 255),       # Red for frame center
-            'lane_center': (255, 0, 0),       # Blue for lane center
+            'single_lane': (255, 165, 0),     # Green for confirmed lanes
+            'both_lane': (0, 255, 0),   # Orange for estimated lanes
+            'center_line': (0, 0, 255),       # Blue for frame center
             'debug_points': (0, 255, 255),    # Cyan for detection points
             'roi_outline': (255, 255, 0)      # Yellow for ROI boundary
         }
@@ -96,67 +95,68 @@ class LaneVisualizer:
             debug_enabled=debug
         )
 
-    def _create_main_view(self, frame: np.ndarray, 
-                         result: DetectionResult) -> np.ndarray:
-        """Create main visualization showing lane detection results.
+    def _create_main_view(self, frame: np.ndarray, result: DetectionResult) -> np.ndarray:
+        """Create main visualization showing lane detection and steering results.
         
-        This view combines the original camera feed with overlays showing:
-        - Detected and estimated lane lines
-        - Vehicle position relative to lane center
-        - Detection status and confidence information
+        This method renders detection results onto the full camera frame, properly
+        accounting for ROI cropping by adjusting coordinate systems. All detected
+        points and curves are shifted from ROI coordinates back to full frame
+        coordinates for accurate visualization.
         """
         viz_frame = frame.copy()
         
-        # Draw detected lanes with appropriate colors
+        # Calculate ROI offset - this is crucial for proper visualization
+        roi_y_start = int(frame.shape[0] * 0.5)  # 40% from top
+        
+        # Draw detected lanes with proper vertical offset
         if result.data.left_curve is not None:
-            # Validate curve points before drawing
             if isinstance(result.data.left_curve, np.ndarray) and len(result.data.left_curve) >= 2:
-                # Use different colors for detected vs estimated lanes
-                color = (self.colors['detected_lane'] 
+                # Create offset version of curve points
+                offset_curve = result.data.left_curve.copy()
+                offset_curve[:, 1] += roi_y_start  # Add offset to y-coordinates
+                
+                color = (self.colors['single_lane'] 
                         if 'left' in result.metadata['detection_status']
-                        else self.colors['estimated_lane'])
+                        else self.colors['both_lane'])
                 try:
-                    cv2.polylines(viz_frame, [result.data.left_curve], False, color, 2)
+                    cv2.polylines(viz_frame, [offset_curve], False, color, 2)
                 except cv2.error:
-                    pass  # Silently handle drawing errors
+                    pass
         
         if result.data.right_curve is not None:
-            # Validate curve points before drawing
             if isinstance(result.data.right_curve, np.ndarray) and len(result.data.right_curve) >= 2:
-                color = (self.colors['detected_lane']
+                # Create offset version of curve points
+                offset_curve = result.data.right_curve.copy()
+                offset_curve[:, 1] += roi_y_start  # Add offset to y-coordinates
+                
+                color = (self.colors['single_lane']
                         if 'right' in result.metadata['detection_status']
-                        else self.colors['estimated_lane'])
+                        else self.colors['both_lane'])
                 try:
-                    cv2.polylines(viz_frame, [result.data.right_curve], False, color, 2)
+                    cv2.polylines(viz_frame, [offset_curve], False, color, 2)
                 except cv2.error:
-                    pass  # Silently handle drawing errors
+                    pass
         
-        # Draw center lines if we have valid detection
         if result.is_valid:
-            self._draw_center_lines(viz_frame, result)
-        
-        # Add detection status overlay
+            self._draw_steering_indicator(viz_frame, result)
+
+        self._draw_center_line(viz_frame)
         self._draw_status_overlay(viz_frame, result)
         
         return viz_frame
 
     def _create_debug_views(self, frame: np.ndarray, 
-                          result: DetectionResult) -> Dict[str, np.ndarray]:
-        """Create additional views for system debugging.
-        
-        Generates several specialized views that help understand and tune
-        the detection system:
-        - Binary threshold view showing lane isolation
-        - ROI view showing detection boundaries
-        - Point detection view showing initial lane points
-        """
+                        result: DetectionResult) -> Dict[str, np.ndarray]:
+        """Create additional views for system debugging with proper coordinate adjustments."""
         debug_views = {}
+        
+        # Calculate ROI offset for point visualization
+        roi_y_start = int(frame.shape[0] * 0.5)
         
         # Create binary threshold visualization
         if self.show_binary and 'binary_frame' in result.metadata:
             binary_viz = cv2.cvtColor(result.metadata['binary_frame'], 
                                     cv2.COLOR_GRAY2BGR)
-            # Add threshold value overlay
             threshold_text = f"Threshold: {result.metadata.get('adaptive_threshold', 'N/A')}"
             self.draw_text(binary_viz, threshold_text, (10, 30))
             debug_views['binary'] = binary_viz
@@ -165,46 +165,47 @@ class LaneVisualizer:
         if self.show_roi:
             roi_viz = frame.copy()
             cv2.polylines(roi_viz, [result.metadata['roi_vertices']], 
-                         True, self.colors['roi_outline'], 2)
+                        True, self.colors['roi_outline'], 2)
             debug_views['roi'] = roi_viz
         
-        # Create point detection visualization if available
+        # Create point detection visualization with proper offset
         if self.show_debug and 'left_points' in result.metadata:
             points_viz = frame.copy()
+            
+            # Draw left points with offset
             if result.metadata['left_points'] is not None:
                 for point in result.metadata['left_points']:
-                    cv2.circle(points_viz, tuple(point), 2, 
-                             self.colors['debug_points'], -1)
+                    # Create offset point
+                    offset_point = (int(point[0]), int(point[1] + roi_y_start))
+                    cv2.circle(points_viz, offset_point, 2, 
+                            self.colors['debug_points'], -1)
+            
+            # Draw right points with offset
             if result.metadata['right_points'] is not None:
                 for point in result.metadata['right_points']:
-                    cv2.circle(points_viz, tuple(point), 2,
-                             self.colors['debug_points'], -1)
+                    # Create offset point
+                    offset_point = (int(point[0]), int(point[1] + roi_y_start))
+                    cv2.circle(points_viz, offset_point, 2,
+                            self.colors['debug_points'], -1)
+                            
             debug_views['points'] = points_viz
         
         return debug_views
 
     def _create_metrics(self, result: DetectionResult) -> ProcessingMetrics:
-        """Create performance metrics from detection results.
-        
-        Combines detection results with system performance data to create
-        a comprehensive set of metrics for monitoring system operation.
-        """
+        """Create performance metrics from detection results."""
         return ProcessingMetrics(
             frame_time=result.metadata.get('processing_time', 0),
-            center_offset=result.data.center_offset,
-            current_speed=result.metadata.get('current_speed', 0),
-            steering_angle=result.metadata.get('steering_angle', 0),
             processing_fps=self.fps,
-            curve_confidence=1.0 if result.is_valid else 0.0,
             detection_status=result.metadata['detection_status'],
-            lane_width_confidence=result.metadata['lane_width_confidence']
+            lane_width_confidence=result.metadata['lane_width_confidence'],
+            steering_angle=result.data.steering_angle,
+            steering_confidence=result.data.steering_confidence,
+            current_speed=0.0  # Will be updated when speed control is implemented
         )
 
-    def _draw_center_lines(self, frame: np.ndarray, result: DetectionResult):
-        """Draw frame center and lane center reference lines.
-        
-        These lines help visualize how well the vehicle is centered between
-        the detected lanes.
+    def _draw_center_line(self, frame: np.ndarray):
+        """Draw frame center reference line.
         """
         frame_center = frame.shape[1] // 2
         
@@ -213,28 +214,63 @@ class LaneVisualizer:
                 (frame_center, frame.shape[0]),
                 (frame_center, frame.shape[0]//2),
                 self.colors['center_line'], 2)
+
+    def _draw_steering_indicator(self, frame: np.ndarray, result: DetectionResult):
+        """Draw visual indicator showing current steering angle.
         
-        # Draw detected lane center line
-        if result.data.left_curve is not None and result.data.right_curve is not None:
-            lane_center = frame_center + int(result.data.center_offset)
-            cv2.line(frame,
-                    (lane_center, frame.shape[0]),
-                    (lane_center, frame.shape[0]//2),
-                    self.colors['lane_center'], 2)
+        Creates a vertical line that moves left or right based on the steering angle.
+        The line's color changes based on the steering confidence, and its position
+        represents the magnitude of the steering angle.
+        """
+        frame_height, frame_width = frame.shape[:2]
+        center_x = frame_width // 2
+        
+        if result.is_valid:
+            # Get steering information from detection results
+            steering_angle = result.data.steering_angle
+            confidence = result.data.steering_confidence
+            
+            # Calculate line position based on steering angle
+            max_angle = 30.0
+            angle_factor = np.clip(steering_angle / max_angle, -1.0, 1.0)
+            max_offset = frame_width // 4
+            
+            # Use cubic function for smoother visual response
+            offset = max_offset * (angle_factor ** 3)
+            line_x = int(center_x + offset)
+            
+            # Color varies based on confidence and angle magnitude
+            base_color = np.array([0, 255, 0])  # Green base
+            if abs(angle_factor) > 0.5:
+                base_color = np.array([255, 165, 0])  # Orange for sharp turns
+            
+            # Fade color based on confidence
+            color = tuple(map(int, base_color * confidence))
+            
+            # Draw steering indicator
+            cv2.line(frame, 
+                    (line_x, frame.shape[0]),
+                    (line_x, frame.shape[0]//2),
+                    color, 2)
 
     def _draw_status_overlay(self, frame: np.ndarray, result: DetectionResult):
-        """Draw detection status and performance information overlay.
+        """Draw detection status and steering information overlay.
         
-        Creates an informative text overlay showing:
-        - Which lanes are currently detected
-        - Lane width confidence
-        - Position offset from lane center
+        Shows key information including:
+        - Current detection status (which lanes are visible)
+        - Steering angle and confidence
+        - System performance (FPS)
         """
         y_offset = self.text_padding
+        
+        # Only show steering angle if detection is valid
+        steering_text = (f"Steering: {result.data.steering_angle:+.1f}° "
+                        f"({result.data.steering_confidence:.2f})"
+                        if result.is_valid else "Steering: N/A")
+        
         text_items = [
             f"Detection: {result.metadata['detection_status']}",
-            f"Width Confidence: {result.metadata['lane_width_confidence']:.2f}",
-            f"Offset: {result.data.center_offset:+.1f}px",
+            steering_text,
             f"FPS: {self.fps:.1f}"
         ]
         

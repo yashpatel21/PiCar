@@ -385,10 +385,6 @@
                     <div class="metric-value">${metrics.processing_fps.toFixed(1)}</div>
                 </div>
                 <div class="metric-item">
-                    <div class="metric-label">Lane Offset</div>
-                    <div class="metric-value">${metrics.center_offset.toFixed(1)}px</div>
-                </div>
-                <div class="metric-item">
                     <div class="metric-label">Detection Status</div>
                     <div class="metric-value">${metrics.detection_status}</div>
                 </div>
@@ -399,6 +395,10 @@
                 <div class="metric-item">
                     <div class="metric-label">Steering Angle</div>
                     <div class="metric-value">${metrics.steering_angle.toFixed(1)}°</div>
+                </div>
+                <div class="metric-item">
+                    <div class="metric-label">Current Speed</div>
+                    <div class="metric-value">${metrics.current_speed.toFixed(1)}</div>
                 </div>
             `;
         }
@@ -438,9 +438,13 @@
         }
         
         // Button event handlers
-        document.getElementById('toggleAutonomous').onclick = async () => {
-            const response = await fetch('/api/toggle_autonomous', {method: 'POST'});
-            const data = await response.json();
+        document.getElementById('toggleAutonomous').onclick = () => {
+            // Emit the toggle event through Socket.IO instead of making a POST request
+            socket.emit('toggle_autonomous');
+        };
+
+        // Add a handler for autonomous status updates
+        socket.on('autonomous_status', (data) => {
             autonomousEnabled = data.autonomous_enabled;
             
             const button = document.getElementById('toggleAutonomous');
@@ -448,7 +452,7 @@
             button.className = autonomousEnabled ? 'button button-stop' : 'button button-start';
             
             updateStatusDisplay();
-        };
+        });
         
         document.getElementById('toggleDebug').onclick = async () => {
             const response = await fetch('/api/toggle_debug', {method: 'POST'});

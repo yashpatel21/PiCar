@@ -207,11 +207,22 @@ class WebServer:
         
         @self.socketio.on('toggle_autonomous')
         def handle_toggle_autonomous():
+            """Handle autonomous mode toggle from web interface.
+            
+            Updates both the web server state and the main system state,
+            then broadcasts the new status to all connected clients.
+            """
             with self.state_lock:
+                # Toggle the state
                 self.autonomous_enabled = not self.autonomous_enabled
-                emit('status_update', {
+                
+                # Update the main system's autonomous mode
+                self.system.set_autonomous_mode(self.autonomous_enabled)
+                
+                # Broadcast the new state to all clients
+                emit('autonomous_status', {
                     'autonomous_enabled': self.autonomous_enabled
-                })
+                }, broadcast=True)
         
         @self.socketio.on('toggle_debug')
         def handle_toggle_debug():
