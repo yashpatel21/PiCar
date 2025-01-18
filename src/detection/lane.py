@@ -7,17 +7,6 @@ from .base import Detector, DetectionResult
 from utils.types import DetectionFrame, LaneDetectionData
 import time
 
-# TODO: Just get the algorithm to detect blocks/sections of white pixels
-# TODO:To extract the individual sections of white pixels,can use connected components or contour detection. 
-
-# if there is only one uninterrupted section of white pixels, then it is a single lane
-# if only one lane is visible, and if it curves up and right by any amount, then it is a left lane
-# if it curves up and left by any amount, then it is a left lane
-
-# if there are two separate sections of white pixels, then there are two lanes visible
-# if there are two lanes visible, then the lane with the bottom most pixel on the left is the left lane, and then all the pixels in the entire section should account for the left lane
-# and the lane with the bottom most pixel on the right is the right lane, and then all the pixels in the entire section should account for the right lane
-
 class LaneDetector(Detector):
     """Lane detection system for real-time tracking and analysis of lane boundaries.
     
@@ -54,16 +43,9 @@ class LaneDetector(Detector):
         self.width = frame_width
         self.height = frame_height
         
-        # Define ROI coordinates (40% to 80% of frame height)
-        y_start = int(self.height * 0.5)
-        y_end = int(self.height * 0.8)
-        
-        self.roi_vertices = np.array([
-            [(0, y_start),
-             (0, y_end),
-             (self.width, y_end),
-             (self.width, y_start)]
-        ], dtype=np.int32)
+        # Define default ROI coordinates (50% to 80% of frame height)
+        self.roi_default_start = 0.50
+        self.roi_default_end = 0.8
         
         # Image processing and detection parameters
         self.config = {
@@ -80,11 +62,10 @@ class LaneDetector(Detector):
             
             # Lane detection thresholds and window parameters
             'min_points_for_curve': 4,    # Minimum points needed for curve fitting
-            'min_peak_value': 20,         # Minimum histogram peak height
-            'min_peak_distance': 30,      # Minimum separation between distinct peaks
-            'window_height': 9,           # Number of sliding windows
-            'window_margin': 60,          # Sliding window width
-            'minpix': 15                  # Minimum pixels for window recentering
+            'min_component_size': 50,        # Minimum pixels for valid component
+            'max_component_spread': 30,      # Maximum allowed point spread
+            'min_aspect_ratio': 2.0,         # Minimum height/width ratio
+            'temporal_distance_threshold': 50 # Maximum allowed position change
         }
         
         # State tracking for temporal consistency
@@ -106,10 +87,6 @@ class LaneDetector(Detector):
         self.recent_lane_widths = []
         self.max_width_history = 10
         self.lane_width_confidence = 0.0
-        
-        # Pre-allocated arrays for efficient curve fitting
-        self.y_points = np.linspace(frame_height, 0, num=20)
-        self.curve_points = np.zeros((20, 2), dtype=np.int32)
 
     def _preprocess_frame(self, frame: np.ndarray) -> np.ndarray:
         """Convert camera frame to binary image optimized for lane detection.
@@ -130,64 +107,86 @@ class LaneDetector(Detector):
         Returns:
             Binary image where white pixels (255) represent potential lane markings
         """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        k_size = self.config['blur_kernel_size']
-        blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
-        
-        binary = cv2.adaptiveThreshold(
-            blurred,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV,
-            self.config['adaptive_block_size'],
-            self.config['adaptive_offset']
-        )
-        
-        kernel = np.ones((3,3), np.uint8)
-        binary = cv2.dilate(binary, kernel, 
-                            iterations=self.config['dilate_iterations'])
-        binary = cv2.erode(binary, kernel, 
-                            iterations=self.config['erode_iterations'])
-        
-        return binary
 
-    def _apply_roi(self, img: np.ndarray) -> np.ndarray:
-        """Extract region of interest from binary image.
+        if frame is None or frame.size == 0:
+            raise ValueError("Empty or invalid frame received in _preprocess_frame")
+
+        # Verify frame dimensions
+        if len(frame.shape) != 3 or frame.shape[2] != 3:
+            raise ValueError(f"Invalid frame format. Expected 3-channel BGR image, got shape {frame.shape}")
         
-        Creates and applies a mask to focus processing on the relevant portion
-        of the frame where lanes are expected to appear. The ROI is a trapezoid
-        that covers the middle 40% to 80% of the frame height.
+        try:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            
+            k_size = self.config['blur_kernel_size']
+            blurred = cv2.GaussianBlur(gray, (k_size, k_size), 0)
+            
+            binary = cv2.adaptiveThreshold(
+                blurred,
+                255,
+                cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV,
+                self.config['adaptive_block_size'],
+                self.config['adaptive_offset']
+            )
+            
+            kernel = np.ones((3,3), np.uint8)
+            binary = cv2.dilate(binary, kernel, 
+                            iterations=self.config['dilate_iterations'])
+            binary = cv2.erode(binary, kernel, 
+                            iterations=self.config['erode_iterations'])
+            
+            return binary
+        except cv2.error as e:
+            raise ValueError(f"OpenCV error during preprocessing: {str(e)}")
+
+    def _classify_single_lane(self, points: np.ndarray) -> str:
+        """Classify a single lane based on its curve/slope direction.
+        
+        The classification follows a simple geometric principle:
+        - If points curve/slope upward and rightward -> it's a left lane
+        - If points curve/slope upward and leftward -> it's a right lane
+        
+        This works because of how lanes appear in perspective view from the car:
+        Left lanes curve right as they go up because we're seeing them from their right side
+        Right lanes curve left as they go up because we're seeing them from their left side
         
         Args:
-            img: Binary input image
-            
+            points: Nx2 array of (x,y) coordinates, sorted by y (bottom to top)
         Returns:
-            Masked binary image containing only the ROI
+            'left' or 'right' classification
         """
-        y_start = int(self.height * 0.5)
-        y_end = int(self.height * 0.8)
-        roi_height = y_end - y_start
+        if len(points) < 3:
+            return 'left'  # Safe default if not enough points
+            
+        # Get bottom and top sections of points
+        top_third = points[:len(points)//3]
+        bottom_third = points[-len(points)//3:]
         
-        mask = np.zeros((roi_height, self.width), dtype=img.dtype)
+        # Calculate average x position for each section
+        top_x = np.mean(top_third[:, 0])
+        bottom_x = np.mean(bottom_third[:, 0])
         
-        roi_vertices = self.roi_vertices.copy()
-        roi_vertices[:, :, 1] -= y_start
-        
-        cv2.fillPoly(mask, roi_vertices, 255)
-        return cv2.bitwise_and(img[y_start:y_end], mask)
+        # If x position increases (curves right) as we go up, it's a left lane
+        # If x position decreases (curves left) as we go up, it's a right lane
+        return 'left' if top_x > bottom_x else 'right'
 
     def _find_lane_points(self, binary_img: np.ndarray) -> Tuple[np.ndarray, np.ndarray, str]:
-        """Detect and classify lane points in the binary image.
+        """Detect lane points using connected components analysis.
         
-        This method implements a sophisticated lane point detection algorithm:
-        1. Analyzes histogram of bottom region to find initial lane positions
-        2. Uses sliding windows to track points up through the image
-        3. Validates and classifies detected points as left/right lane
-        4. Maintains temporal consistency through position tracking
+        This method implements a complete lane detection strategy that handles both
+        single and dual lane scenarios. For dual lanes, it uses relative position
+        to classify left and right. For single lanes, it employs sophisticated
+        geometric analysis to determine the lane type.
+        
+        The detection process follows these steps:
+        1. Find all connected components in the binary image
+        2. Filter components by size to remove noise
+        3. Extract point coordinates for valid components
+        4. Classify components using either dual or single lane logic
         
         Args:
-            binary_img: Preprocessed binary image
+            binary_img: Binary image where lane lines appear as white pixels
             
         Returns:
             Tuple containing:
@@ -195,157 +194,70 @@ class LaneDetector(Detector):
             - Right lane points (Nx2 array or empty)
             - Detection status ('left', 'right', 'both', or 'none')
         """
-        # Find all non-black pixels in the binary image
-        nonzero_y, nonzero_x = binary_img.nonzero()
+        # Initialize return values
+        left_points = np.array([])
+        right_points = np.array([])
+        detection_status = 'none'
         
-        # Analyze bottom portion for initial lane positions
-        bottom_region_height = int(binary_img.shape[0] * 0.3)
-        bottom_region = binary_img[-bottom_region_height:, :]
-        histogram = np.sum(bottom_region, axis=0)
+        # Find all connected components in the binary image
+        num_labels, labels = cv2.connectedComponents(binary_img)
         
-        midpoint = binary_img.shape[1] // 2
-        left_hist = histogram[:midpoint]
-        right_hist = histogram[midpoint:]
+        # Need at least one component besides background
+        if num_labels < 2:
+            return left_points, right_points, detection_status
         
-        left_max = np.max(left_hist)
-        right_max = np.max(right_hist)
+        # Calculate size of each component (excluding background label 0)
+        component_sizes = [np.sum(labels == label) for label in range(1, num_labels)]
         
-        # Use different thresholds for left and right lanes
-        left_min_peak = self.config['min_peak_value']
-        right_min_peak = self.config['min_peak_value'] * 0.8
+        # Get indices of components sorted by size (largest first)
+        sorted_indices = np.argsort(component_sizes)[::-1]
         
-        # Initialize empty arrays for points
-        left_points = np.array([], dtype=np.int32).reshape(0, 2)
-        right_points = np.array([], dtype=np.int32).reshape(0, 2)
+        # Process components to get points
+        components = []
+        min_component_size = binary_img.size * 0.01  # Minimum size threshold
         
-        # Find lane base points
-        left_base = None if left_max < left_min_peak else np.argmax(left_hist)
-        right_base = None if right_max < right_min_peak else midpoint + np.argmax(right_hist)
-        
-        # Track points if bases are found
-        if left_base is not None:
-            left_points_list = self._track_line_points(
-                binary_img=binary_img,
-                base_x=left_base,
-                nonzero_x=nonzero_x,
-                nonzero_y=nonzero_y
-            )
-            if left_points_list:
-                left_points = np.array(left_points_list)
+        # Extract valid components
+        for label_idx in sorted_indices:
+            # Skip if component is too small
+            if component_sizes[label_idx] < min_component_size:
+                continue
                 
-        if right_base is not None:
-            right_points_list = self._track_line_points(
-                binary_img=binary_img,
-                base_x=right_base,
-                nonzero_x=nonzero_x,
-                nonzero_y=nonzero_y
-            )
-            if right_points_list:
-                right_points = np.array(right_points_list)
+            # Get points for this component
+            label = label_idx + 1
+            y_coords, x_coords = np.where(labels == label)
+            points = np.column_stack((x_coords, y_coords))
+            # Sort points by y-coordinate (bottom to top)
+            points = points[points[:, 1].argsort()]
+            components.append(points)
+            
+            # Stop after finding up to two valid components
+            if len(components) >= 2:
+                break
         
-        # Determine detection status
-        if len(left_points) > 0 and len(right_points) > 0:
+        # Handle different detection scenarios
+        if len(components) >= 2:
+            # Dual lane case - use bottom positions to determine left/right
+            if components[0][0][0] < components[1][0][0]:
+                left_points = components[0]
+                right_points = components[1]
+            else:
+                left_points = components[1]
+                right_points = components[0]
             detection_status = 'both'
-        elif len(left_points) > 0:
-            detection_status = 'left'
-        elif len(right_points) > 0:
-            detection_status = 'right'
-        else:
-            detection_status = 'none'
+            
+        elif len(components) == 1:
+            # Single lane case - use robust geometric analysis
+            points = components[0]
+            lane_type = self._classify_single_lane(points)
+            
+            if lane_type == 'left':
+                left_points = points
+                detection_status = 'left'
+            else:
+                right_points = points
+                detection_status = 'right'
         
         return left_points, right_points, detection_status
-
-    def _track_line_points(self, binary_img: np.ndarray, base_x: int, nonzero_x: np.ndarray, nonzero_y: np.ndarray) -> List:
-        """Track lane points vertically through the image using sliding windows.
-        
-        This method implements an adaptive sliding window algorithm that:
-        1. Starts from a base point at the bottom of the image
-        2. Moves upward in fixed-height windows
-        3. Centers each window on detected lane points
-        4. Adjusts window width based on lane curvature
-        
-        The algorithm includes several features for robust tracking:
-        - Dynamic window margins that adapt to curve rate
-        - Predictive window positioning using movement history
-        - Recovery mechanisms for temporarily lost tracking
-        - Continuous validation of detected points
-        
-        Args:
-            binary_img: Binary input image
-            base_x: Starting x-coordinate for tracking
-            nonzero_x: X-coordinates of white pixels in binary image
-            nonzero_y: Y-coordinates of white pixels in binary image
-        
-        Returns:
-            List of points belonging to the tracked lane
-        """
-        points = []
-        current_x = base_x
-        x_history = [current_x]
-        margin_history = []
-        
-        window_height = binary_img.shape[0] // self.config['window_height']
-        base_margin = self.config['window_margin']
-        minpix = self.config['minpix']
-        
-        for window in range(self.config['window_height']):
-            # Calculate dynamic search margin based on curve rate
-            if len(x_history) >= 2:
-                recent_movement = abs(x_history[-1] - x_history[-2])
-                dynamic_margin = min(base_margin * (1 + recent_movement / base_margin), 
-                                    base_margin * 2)
-            else:
-                dynamic_margin = base_margin
-            
-            # Predict next window center using momentum
-            if len(x_history) >= 2:
-                movement = x_history[-1] - x_history[-2]
-                predicted_x = current_x + int(movement * 0.8)
-            else:
-                predicted_x = current_x
-            
-            # Define search window boundaries
-            win_y_low = binary_img.shape[0] - (window + 1) * window_height
-            win_y_high = binary_img.shape[0] - window * window_height
-            win_x_low = max(0, predicted_x - dynamic_margin)
-            win_x_high = min(binary_img.shape[1], predicted_x + dynamic_margin)
-            
-            # Find points within window
-            good_inds = ((nonzero_y >= win_y_low) & 
-                        (nonzero_y < win_y_high) & 
-                        (nonzero_x >= win_x_low) & 
-                        (nonzero_x < win_x_high)).nonzero()[0]
-            
-            if len(good_inds) > minpix:
-                current_x = int(np.mean(nonzero_x[good_inds]))
-                points.extend(np.column_stack((nonzero_x[good_inds], 
-                                            nonzero_y[good_inds])))
-                x_history.append(current_x)
-                margin_history.append(dynamic_margin)
-                
-            # Implement recovery for lost tracking
-            elif len(x_history) >= 2:
-                recovery_margin = dynamic_margin * 1.5
-                win_x_low = max(0, predicted_x - recovery_margin)
-                win_x_high = min(binary_img.shape[1], predicted_x + recovery_margin)
-                
-                # Try wider search window
-                good_inds = ((nonzero_y >= win_y_low) & 
-                            (nonzero_y < win_y_high) & 
-                            (nonzero_x >= win_x_low) & 
-                            (nonzero_x < win_x_high)).nonzero()[0]
-                
-                if len(good_inds) > minpix:
-                    current_x = int(np.mean(nonzero_x[good_inds]))
-                    points.extend(np.column_stack((nonzero_x[good_inds], 
-                                                nonzero_y[good_inds])))
-                else:
-                    current_x = predicted_x
-                
-                x_history.append(current_x)
-                margin_history.append(recovery_margin)
-        
-        return points
 
     def _update_position_tracking(self, left_points: np.ndarray, right_points: np.ndarray):
         """Update tracked lane positions with temporal smoothing.
@@ -374,133 +286,6 @@ class LaneDetector(Detector):
                 self.prev_right_x = (self.position_memory_decay * self.prev_right_x +
                                     (1 - self.position_memory_decay) * current_right_x)
 
-    def _classify_single_lane(self, points: np.ndarray, curve: np.ndarray) -> str:
-        """Classify a single detected lane as either left or right.
-        
-        Uses multiple geometric features to make a robust classification:
-        - Absolute position in frame
-        - Curve direction and shape
-        - Historical position consistency
-        - Temporal smoothing of classification
-        
-        The method weights these features and applies temporal smoothing to
-        prevent classification flips.
-        
-        Args:
-            points: Original detected points for the lane
-            curve: Fitted curve points
-            
-        Returns:
-            'left' or 'right' classification
-        """
-        if len(curve) < 3:
-            return 'left' if np.mean(points[:, 0]) < self.width/2 else 'right'
-        
-        # Calculate position-based score relative to frame center
-        center_x = self.width / 2
-        bottom_x = curve[-1][0]
-        position_score = (bottom_x - center_x) / center_x  # Normalized to [-1, 1]
-        
-        # Calculate direction score using curve geometry
-        bottom_section = curve[-3:]  # Use last 3 points
-        top_section = curve[:3]      # Use first 3 points
-        direction_vector = top_section.mean(axis=0) - bottom_section.mean(axis=0)
-        # Use arctan to handle extreme angles while keeping score in [-1, 1]
-        direction_score = np.arctan2(direction_vector[0], abs(direction_vector[1])) / (np.pi/2)
-        
-        # Calculate temporal consistency using previous positions
-        temporal_score = 0
-        if self.prev_left_x is not None and self.prev_right_x is not None:
-            dist_to_left = abs(bottom_x - self.prev_left_x)
-            dist_to_right = abs(bottom_x - self.prev_right_x)
-            temporal_score = 1 if dist_to_right < dist_to_left else -1
-        
-        # Weight and combine scores for final classification
-        weights = {
-            'position': 0.5,    # Highest weight for absolute position
-            'direction': 0.3,   # Medium weight for curve direction
-            'temporal': 0.2     # Lower weight for temporal consistency
-        }
-        
-        final_score = (weights['position'] * position_score +
-                        weights['direction'] * direction_score +
-                        weights['temporal'] * temporal_score)
-        
-        # Get initial classification based on weighted score
-        classification = 'left' if final_score < 0 else 'right'
-        
-        # Apply temporal smoothing using classification history
-        self.lane_classification_history.append(classification)
-        if len(self.lane_classification_history) > self.classification_history_size:
-            self.lane_classification_history.pop(0)
-        
-        # Return most common recent classification
-        return max(set(self.lane_classification_history), 
-                    key=self.lane_classification_history.count)
-
-    def _validate_curves(self, left_curve: np.ndarray, right_curve: np.ndarray) -> bool:
-        """Validate detected curves using geometric constraints and relationships.
-        
-        Implements multiple validation criteria:
-        1. Basic position check (left curve must be left of right curve)
-        2. Minimum separation distance between curves
-        3. Parallel alignment check
-        4. Consistent separation along curve length
-        
-        These geometric constraints help prevent false dual-lane detection
-        when a single lane is detected twice or when noise creates false curves.
-        
-        Args:
-            left_curve: Points forming the left curve
-            right_curve: Points forming the right curve
-            
-        Returns:
-            Boolean indicating if curves represent valid separate lanes
-        """
-        if left_curve is None or right_curve is None:
-            return True
-            
-        # Calculate average x-positions for basic position validation
-        left_x = np.mean(left_curve[:, 0])
-        right_x = np.mean(right_curve[:, 0])
-        
-        # Verify left curve is left of right curve
-        if left_x >= right_x:
-            return False
-        
-        # Check minimum separation between curves
-        min_separation = 50  # Minimum valid separation in pixels
-        separation = right_x - left_x
-        if separation < min_separation:
-            return False
-        
-        # Validate curve parallelism when sufficient points exist
-        if len(left_curve) >= 3 and len(right_curve) >= 3:
-            left_direction = left_curve[0] - left_curve[-1]
-            right_direction = right_curve[0] - right_curve[-1]
-            
-            # Normalize direction vectors
-            left_direction = left_direction / np.linalg.norm(left_direction)
-            right_direction = right_direction / np.linalg.norm(right_direction)
-            
-            # Check alignment using dot product
-            dot_product = np.dot(left_direction, right_direction)
-            if dot_product < 0.75:  # Allow up to ~41 degrees difference
-                return False
-        
-        # Verify consistent separation along curves
-        separations = []
-        for i in range(min(len(left_curve), len(right_curve))):
-            sep = right_curve[i][0] - left_curve[i][0]
-            separations.append(sep)
-        
-        # Calculate variation in separation
-        separation_variation = np.std(separations) / np.mean(separations)
-        if separation_variation > 0.3:  # Allow 30% variation
-            return False
-            
-        return True
-
     def _fit_curve(self, points: np.ndarray) -> Optional[np.ndarray]:
         """Fit a smooth polynomial curve to detected lane points.
         
@@ -523,7 +308,7 @@ class LaneDetector(Detector):
         """
         if not isinstance(points, np.ndarray) or len(points) < self.config['min_points_for_curve']:
             return None
-        
+            
         try:
             # Fit second-degree polynomial to capture typical road curvature
             coeffs = np.polyfit(points[:, 1], points[:, 0], 2)
@@ -585,12 +370,76 @@ class LaneDetector(Detector):
             # Calculate radius using the curve formula
             if d2x_dy2 != 0:
                 radius = ((1 + dx_dy**2)**(3/2)) / abs(d2x_dy2)
-                return radius
+            return radius
             return None
             
         except Exception as e:
             print(f"Warning: Radius calculation failed: {str(e)}")
             return None
+
+    def _calculate_steering_confidence(self, detection_status: str, lane_width_confidence: float) -> float:
+        """Calculate confidence in steering decisions based on detection quality."""
+        if detection_status == 'both':
+            return min(1.0, 0.8 + 0.2 * lane_width_confidence)
+        elif detection_status in ['left', 'right']:
+            return 0.7  # Single lane detection has lower baseline confidence
+        return 0.0
+
+    def _update_lane_width(self, left_curve: Optional[np.ndarray], 
+                        right_curve: Optional[np.ndarray]) -> Optional[float]:
+        """Update lane width tracking and calculate confidence in width measurements.
+        
+        This method maintains a running history of lane width measurements and
+        calculates confidence based on consistency of these measurements.
+        """
+        if left_curve is None or right_curve is None:
+            return None
+            
+        # Calculate average lane width
+        left_x = np.mean(left_curve[:, 0])
+        right_x = np.mean(right_curve[:, 0])
+        current_width = abs(right_x - left_x)
+        
+        # Update width history
+        self.recent_lane_widths.append(current_width)
+        if len(self.recent_lane_widths) > self.max_width_history:
+            self.recent_lane_widths.pop(0)
+        
+        # Calculate width consistency
+        if len(self.recent_lane_widths) >= 3:
+            mean_width = np.mean(self.recent_lane_widths)
+            std_width = np.std(self.recent_lane_widths)
+            
+            # Calculate confidence based on width consistency
+            variation_coefficient = std_width / (mean_width + 1e-6)
+            self.lane_width_confidence = max(0.0, min(1.0, 1.0 - variation_coefficient))
+        else:
+            self.lane_width_confidence = 0.5  # Default confidence with limited history
+        
+        return current_width
+
+    def _calculate_bottom_point_urgency(self, lane_points: np.ndarray) -> float:
+        """Calculate how urgently we need to steer based on bottom point position.
+        
+        Remember: In image coordinates, bottom points have highest y-values.
+        """
+        if len(lane_points) == 0:
+            return 0.0
+        
+        # Get the points with highest y-values (bottom of image)
+        bottom_points = lane_points[-len(lane_points)//4:]  # Use bottom quarter
+        
+        # Calculate average x position of bottom points
+        bottom_x = np.mean(bottom_points[:, 0])
+        
+        # Calculate distance from center as fraction of half frame width
+        center_distance = abs(bottom_x - (self.width / 2))
+        normalized_distance = center_distance / (self.width / 2)
+        
+        # Convert to urgency factor - closer to center means more urgent
+        # Use exponential to make response stronger as we get very close
+        urgency = np.exp(1 - normalized_distance) - 1
+        return min(urgency, 1.0)
 
     def _calculate_exponential_steering(self, horizontalness: float,
                                     curve_bottom_x: float,
@@ -660,12 +509,13 @@ class LaneDetector(Detector):
         1. Dual-lane detection with center tracking
         2. Single-lane detection with offset compensation
         3. Curve anticipation for smoother navigation
-        4. Recovery steering for partial detection cases
+        4. Bottom point proximity for urgent corrections
         
-        The calculation considers both immediate position correction needs and
-        upcoming curve geometry to produce natural steering behavior. The method
-        includes comprehensive error handling to ensure it always returns a 
-        valid steering angle.
+        The calculation considers multiple factors:
+        - Immediate position correction needs
+        - Upcoming curve geometry
+        - Bottom point proximity to center
+        - Lane-specific urgency factors
         
         Args:
             left_curve: Points forming the left lane curve, if detected
@@ -696,6 +546,17 @@ class LaneDetector(Detector):
                 # Calculate anticipatory steering from curve shape
                 curve_direction = self._estimate_curve_direction(left_curve, right_curve)
                 
+                # Get urgency factors for both lanes
+                left_urgency = self._calculate_bottom_point_urgency(left_curve)
+                right_urgency = self._calculate_bottom_point_urgency(right_curve)
+                
+                # Use maximum urgency between the two lanes
+                combined_urgency = max(left_urgency, right_urgency)
+                
+                # Modify steering factors based on urgency
+                normalized_offset *= (1.0 + combined_urgency)  # Increase correction when urgent
+                curve_direction *= (1.0 - 0.5 * combined_urgency)  # Reduce anticipation when urgent
+                
                 # Combine immediate and anticipatory steering
                 return self._combine_steering_factors(
                     immediate_offset=normalized_offset,
@@ -715,18 +576,37 @@ class LaneDetector(Detector):
                     # Calculate how horizontal the curve is becoming
                     horizontalness = abs(curve_top_x - curve_bottom_x) / max(vertical_distance, 1)
                     
+                    # Calculate bottom point urgency
+                    urgency = self._calculate_bottom_point_urgency(detected_curve)
+                    
                     # Determine base steering direction
                     steering_direction = 1 if detection_status == 'left' else -1
                     
-                    # Calculate steering magnitude based on curve geometry
-                    steering_magnitude = self._calculate_exponential_steering(
+                    # Calculate base steering magnitude
+                    base_magnitude = self._calculate_exponential_steering(
                         horizontalness=horizontalness,
                         curve_bottom_x=curve_bottom_x,
                         frame_width=self.width,
                         detection_status=detection_status
                     )
                     
-                    return float(steering_direction * steering_magnitude * max_steering_angle)
+                    # Modify steering magnitude based on urgency
+                    if abs(base_magnitude) < 0.5:  # For minor corrections
+                        # Increase response when close to lane
+                        steering_magnitude = base_magnitude * (1.0 + urgency)
+                    else:  # For sharp turns
+                        # Reduce aggressive anticipatory steering until we're closer
+                        steering_magnitude = base_magnitude * (0.5 + 0.5 * urgency)
+                    
+                    # Calculate final steering angle
+                    steering_angle = float(steering_direction * steering_magnitude * max_steering_angle)
+                    
+                    # Apply additional urgency scaling for very close situations
+                    if urgency > 0.8:  # When very close to lane
+                        # Strengthen corrective response to avoid crossing lane
+                        steering_angle *= 1.2
+                    
+                    return max(min(steering_angle, max_steering_angle), -max_steering_angle)
             
             # Return center steering if no valid detection
             return center_steering
@@ -823,140 +703,203 @@ class LaneDetector(Detector):
         # Convert to actual steering angle
         return steering_factor * max_angle
 
-    def process_frame(self, frame: DetectionFrame) -> DetectionResult:
-        """Process a camera frame to detect lanes and determine steering commands.
+    def _calculate_dynamic_roi(self, frame_height: int, detection_status: str, 
+                            left_curve: Optional[np.ndarray] = None, 
+                            right_curve: Optional[np.ndarray] = None) -> Tuple[float, float]:
+        """Calculate dynamic ROI boundaries based on lane characteristics.
         
-        This method implements a complete lane detection and analysis pipeline:
+        The ROI adapts to different driving scenarios by adjusting its bottom boundary:
+        - In straight sections with both lanes visible, we use the default bottom 
+        boundary since the perspective makes lanes clearly visible higher up
+        - In curves or single-lane scenarios, we extend down to capture more immediate
+        road area, potentially using the entire frame height
         
-        Image Preprocessing:
-        - Converts frame to binary image optimized for lane detection
-        - Applies ROI mask to focus on relevant portion of frame 
-        - Uses adaptive thresholding to handle variable lighting
-        
-        Lane Detection:
-        - Analyzes image histogram to find potential lane positions
-        - Uses sliding windows to track lane points vertically
-        - Fits polynomial curves to detected points
-        - Validates and classifies detected lines as left/right lanes
-        
-        Steering Analysis:
-        - Calculates optimal steering angle from detected geometry 
-        - Determines confidence level in steering decision
-        - Maintains temporal consistency through state tracking
-        - Handles single and dual lane detection scenarios
-        
-        The pipeline includes comprehensive error handling and fallback behaviors,
-        ensuring it always produces valid outputs even with partial or failed
-        detection. Multiple validation steps help prevent false detections
-        and maintain steering stability.
+        The top boundary remains fixed to maintain consistent look-ahead distance,
+        which is crucial for anticipating upcoming road conditions.
         
         Args:
-            frame: DetectionFrame containing camera image and timestamp
-            
+            frame_height: Height of the camera frame in pixels
+            detection_status: Current detection state ('left', 'right', or 'both')
+            left_curve: Detected left lane points, if any
+            right_curve: Detected right lane points, if any
+        
         Returns:
-            DetectionResult containing:
-            - Detected lane data (curves, positions, steering)
-            - Detection validity flag
-            - Debug/visualization metadata
+            Tuple of (y_start, y_end) as fractions of frame height
         """
+        max_end = 1.0  # Maximum bottom boundary (full frame height)
+        
+        # For single lane detection, we need to see as much of the lane as possible
+        if detection_status in ['left', 'right']:
+            return (self.roi_default_start, max_end)
+        
+        # For dual lane detection, analyze curvature to determine bottom boundary
+        if detection_status == 'both' and left_curve is not None and right_curve is not None:
+            # Calculate how much each lane curves by comparing x-coordinates
+            left_curve_amount = abs(left_curve[0][0] - left_curve[-1][0])
+            right_curve_amount = abs(right_curve[0][0] - right_curve[-1][0])
+            
+            # Average curvature as fraction of frame width
+            avg_curve = (left_curve_amount + right_curve_amount) / (2 * self.width)
+            
+            if avg_curve < 0.1:  # Relatively straight lanes
+                return (self.roi_default_start, self.roi_default_end)
+            else:
+                # Scale bottom boundary linearly with curve amount
+                # Map curve amount [0.1, 0.5] to y_end [default_end, max_end]
+                curve_factor = min(1.0, (avg_curve - 0.1) / 0.4)
+                y_end = self.roi_default_end + ((max_end - self.roi_default_end) * curve_factor)
+                return (self.roi_default_start, y_end)
+        
+        # Default case - use standard ROI boundaries
+        return (self.roi_default_start, self.roi_default_end)
+
+    def process_frame(self, frame: DetectionFrame) -> DetectionResult:
+        """Process a single camera frame to detect and analyze lane lines."""
         try:
-            # Stage 1: Image preprocessing
-            binary = self._preprocess_frame(frame.frame)
-            roi = self._apply_roi(binary)
+            start_time = time.time()
+
+            if frame is None or frame.frame is None or frame.frame.size == 0:
+                raise ValueError("Invalid or empty frame received")
             
-            # Stage 2: Lane point detection 
-            left_points, right_points, detection_status = self._find_lane_points(roi)
+            # Initialize metadata dictionary with required fields
+            metadata = {
+                'detection_status': 'none',
+                'processing_time': 0.0,
+                'lane_width_confidence': 0.0,
+                'binary_frame': None,
+                'left_points': None,
+                'right_points': None,
+                'roi_y_start': None,
+                'roi_y_end': None,
+                'roi_vertices': None
+            }
             
-            # Initialize metrics with safe default values
-            steering_angle = 0.0  # Always initialize to a valid float
-            center_offset = 0
-            curve_radius = None
-            curve_direction = self.prev_curve_direction
-            steering_confidence = 0.0
-            left_curve = None
-            right_curve = None
-            is_valid = False
-            lane_center = self.width // 2  # Default to frame center
+            # Initialize detection data structure with safe defaults
+            data = LaneDetectionData(
+                left_curve=None,
+                right_curve=None,
+                center_offset=0,
+                curve_radius=None,
+                curve_direction=0.0,
+                steering_angle=0.0,
+                steering_confidence=0.0
+            )
             
-            # Stage 3: Process detected lanes when available
-            if len(left_points) > 0 or len(right_points) > 0:
-                # Fit polynomial curves to detected points
-                if len(left_points) > 0:
-                    left_curve = self._fit_curve(left_points)
-                if len(right_points) > 0:
-                    right_curve = self._fit_curve(right_points)
-                    
-                # Update position history for temporal smoothing
-                self._update_position_tracking(left_points, right_points)
+            # Calculate initial ROI position
+            y_start = int(self.height * self.roi_default_start)
+            y_end = int(self.height * self.roi_default_end)
+
+            # Validate ROI boundaries
+            if y_start >= y_end or y_end > frame.frame.shape[0]:
+                raise ValueError("Invalid ROI boundaries")
+            
+            # Store initial ROI information in metadata
+            metadata['roi_y_start'] = y_start
+            metadata['roi_y_end'] = y_end
+            
+            # Create ROI vertices for visualization
+            roi_vertices = np.array([
+                [(0, y_start),
+                (0, y_end),
+                (self.width, y_end),
+                (self.width, y_start)]
+            ], dtype=np.int32)
+            metadata['roi_vertices'] = roi_vertices
+            
+            # Extract ROI region and process
+            roi_frame = frame.frame[y_start:y_end, :]
+            if roi_frame is None or roi_frame.size == 0:
+                raise ValueError("ROI extraction resulted in empty frame")
+            binary = self._preprocess_frame(roi_frame)
+            metadata['binary_frame'] = binary
+            
+            # Detect lane points
+            left_points, right_points, detection_status = self._find_lane_points(binary)
+            
+            # Fit initial curves if points were found
+            left_curve = self._fit_curve(left_points) if len(left_points) > 0 else None
+            right_curve = self._fit_curve(right_points) if len(right_points) > 0 else None
+            
+            # Calculate dynamic ROI based on initial detection
+            y_start_frac, y_end_frac = self._calculate_dynamic_roi(
+                frame_height=self.height,
+                detection_status=detection_status,
+                left_curve=left_curve,
+                right_curve=right_curve
+            )
+            
+            # Calculate new ROI boundaries
+            new_y_start = int(self.height * y_start_frac)
+            new_y_end = int(self.height * y_end_frac)
+            
+            # Check if ROI changed significantly
+            roi_change = abs(new_y_end - y_end)
+            if roi_change > 10:  # Threshold for significant change
+                # Update ROI information
+                y_start = new_y_start
+                y_end = new_y_end
                 
-                # Process curves if at least one is valid
-                if left_curve is not None or right_curve is not None:
-                    # Calculate steering angle with safety checks
-                    new_steering_angle = self._calculate_steering_angle(
-                        left_curve=left_curve,
-                        right_curve=right_curve,
-                        detection_status=detection_status
-                    )
-                    
-                    # Update steering angle if valid
-                    if isinstance(new_steering_angle, (int, float)):
-                        steering_angle = float(new_steering_angle)
-                    
-                    # Calculate supporting metrics
-                    reference_curve = left_curve if left_curve is not None else right_curve
-                    curve_radius = self._calculate_curve_radius(reference_curve)
-                    curve_direction = self._estimate_curve_direction(left_curve, right_curve)
-                    
-                    # Calculate lane center and position offset
-                    frame_center = self.width // 2
-                    if detection_status == 'both':
-                        lane_center = (left_curve[-1][0] + right_curve[-1][0]) // 2
-                    else:
-                        detected_curve = left_curve if left_curve is not None else right_curve
-                        if detection_status == 'left':
-                            lane_center = detected_curve[-1][0] + self.width // 4
-                        else:  # right lane
-                            lane_center = detected_curve[-1][0] - self.width // 4
-                    
-                    center_offset = lane_center - frame_center
-                    
-                    # Set confidence based on detection quality
-                    steering_confidence = 1.0 if detection_status == 'both' else 0.7
-                    is_valid = True
+                # Update ROI vertices for visualization
+                roi_vertices = np.array([
+                    [(0, y_start),
+                    (0, y_end),
+                    (self.width, y_end),
+                    (self.width, y_start)]
+                ], dtype=np.int32)
+                
+                # Repeat detection with new ROI
+                roi_frame = frame.frame[y_start:y_end, :]
+                binary = self._preprocess_frame(roi_frame)
+                left_points, right_points, detection_status = self._find_lane_points(binary)
+                
+                # Update curves with new detection
+                left_curve = self._fit_curve(left_points) if len(left_points) > 0 else None
+                right_curve = self._fit_curve(right_points) if len(right_points) > 0 else None
+                
+                # Update metadata with new ROI information
+                metadata['roi_y_start'] = y_start
+                metadata['roi_y_end'] = y_end
+                metadata['roi_vertices'] = roi_vertices
+                metadata['binary_frame'] = binary
             
-            # Create lane detection data structure with guaranteed valid values
-            lane_data = LaneDetectionData(
+            # Store final detection results in metadata
+            metadata['left_points'] = left_points
+            metadata['right_points'] = right_points
+            metadata['detection_status'] = detection_status
+            
+            # Rest of processing remains the same...
+            current_width = self._update_lane_width(left_curve, right_curve)
+            metadata['lane_width_confidence'] = self.lane_width_confidence
+            
+            steering_angle = self._calculate_steering_angle(
+                left_curve, right_curve, detection_status
+            )
+            
+            steering_confidence = self._calculate_steering_confidence(
+                detection_status,
+                self.lane_width_confidence
+            )
+            
+            data = LaneDetectionData(
                 left_curve=left_curve,
                 right_curve=right_curve,
-                center_offset=center_offset,
-                curve_radius=curve_radius,
-                curve_direction=curve_direction,
-                steering_angle=float(steering_angle),  # Ensure float type
+                center_offset=0,
+                curve_radius=self._calculate_curve_radius(left_curve if left_curve is not None else right_curve),
+                curve_direction=self._estimate_curve_direction(left_curve, right_curve),
+                steering_angle=steering_angle,
                 steering_confidence=steering_confidence
             )
             
-            # Prepare comprehensive metadata for debugging/visualization
-            metadata = {
-                'binary_frame': roi,
-                'roi_vertices': self.roi_vertices,
-                'left_points': left_points if len(left_points) > 0 else None,
-                'right_points': right_points if len(right_points) > 0 else None,
-                'detection_status': detection_status,
-                'lane_width_confidence': self.lane_width_confidence,
-                'adaptive_threshold': self.config['adaptive_block_size'],
-                'binary_frame_full': binary,
-                'processing_time': time.time() - frame.timestamp
-            }
+            metadata['processing_time'] = time.time() - start_time
             
             return DetectionResult(
-                is_valid=is_valid,
-                data=lane_data,
+                is_valid=detection_status != 'none',
+                data=data,
                 metadata=metadata
             )
             
         except Exception as e:
             print(f"Error in process_frame: {str(e)}")
-            # Return safe default values if processing fails
             return DetectionResult(
                 is_valid=False,
                 data=LaneDetectionData(
@@ -964,13 +907,18 @@ class LaneDetector(Detector):
                     right_curve=None,
                     center_offset=0,
                     curve_radius=None,
-                    curve_direction=self.prev_curve_direction,
+                    curve_direction=0.0,
                     steering_angle=0.0,
                     steering_confidence=0.0
                 ),
                 metadata={
-                    'error': str(e),
-                    'processing_time': time.time() - frame.timestamp
+                    'detection_status': 'none',
+                    'processing_time': time.time() - start_time,
+                    'lane_width_confidence': 0.0,
+                    'roi_vertices': metadata.get('roi_vertices', None),
+                    'roi_y_start': metadata.get('roi_y_start', None),
+                    'roi_y_end': metadata.get('roi_y_end', None),
+                    'error': str(e)
                 }
             )
 

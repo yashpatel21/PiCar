@@ -214,10 +214,24 @@
             background-color: #f44336;
             color: white;
         }
+
+        /* Add new styles for stream performance monitoring */
+        .stream-stats {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            z-index: 10;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.4.1/socket.io.min.js"></script>
 </head>
 <body>
+    <!-- Keep all existing HTML structure exactly the same -->
     <div class="container">
         <!-- Main Control Panel -->
         <div class="controls">
@@ -236,6 +250,7 @@
         
         <!-- Parameter Controls -->
         <div class="parameter-controls">
+            <!-- Keep all existing parameter controls HTML -->
             <div class="parameter-group">
                 <h3>Lane Detection Parameters</h3>
                 
@@ -283,33 +298,36 @@
             </div>
         </div>
         
-        <!-- Video Feeds -->
+        <!-- Stream Toggles -->
         <div class="stream-toggles">
             <button class="stream-toggle active" data-stream="binary">Binary View</button>
             <button class="stream-toggle" data-stream="roi">ROI View</button>
             <button class="stream-toggle" data-stream="points">Points View</button>
         </div>
         
+        <!-- Video Feeds -->
         <div class="video-grid">
-            <!-- Main View (always visible) -->
             <div class="video-container">
                 <h2>Main View - Lane Detection</h2>
+                <div class="stream-stats" id="main-stats">FPS: 0.0</div>
                 <img class="video-feed" id="main-feed" alt="Main view">
             </div>
             
-            <!-- Debug Views (initially hidden except binary) -->
             <div class="video-container" id="binaryView" style="display: block;">
                 <h2>Binary Threshold Analysis</h2>
+                <div class="stream-stats" id="binary-stats">FPS: 0.0</div>
                 <img class="video-feed" id="binary-feed" alt="Binary view">
             </div>
             
             <div class="video-container" id="roiView" style="display: none;">
                 <h2>Region of Interest</h2>
+                <div class="stream-stats" id="roi-stats">FPS: 0.0</div>
                 <img class="video-feed" id="roi-feed" alt="ROI view">
             </div>
             
             <div class="video-container" id="pointsView" style="display: none;">
                 <h2>Point Detection</h2>
+                <div class="stream-stats" id="points-stats">FPS: 0.0</div>
                 <img class="video-feed" id="points-feed" alt="Points view">
             </div>
         </div>
@@ -322,66 +340,209 @@
             </div>
         </div>
     </div>
-
     <script>
-        // Initialize Socket.IO connection first
-        const socket = io();
-        
-        // Map of stream names to their image elements
+        // Initialize Socket.IO with optimized configuration for video streaming
+        const socket = io({
+            transports: ['websocket'],  // Force WebSocket transport for better performance
+            reconnectionAttempts: 5,    // Limit reconnection attempts
+            reconnectionDelay: 1000,    // Wait 1 second between attempts
+            timeout: 10000,             // 10 second connection timeout
+            forceNew: true,             // Create fresh connection each time
+            query: {                    // Send client capabilities
+                width: window.innerWidth,
+                height: window.innerHeight
+            }
+        });
+
+        // Manage video feed elements with intelligent frame buffering
         const streamFeeds = {
             'main': document.getElementById('main-feed'),
             'binary': document.getElementById('binary-feed'),
             'roi': document.getElementById('roi-feed'),
             'points': document.getElementById('points-feed')
         };
-        
-        // Initialize active streams
-        let activeStreams = new Set(['main', 'binary']);
-        
-        // State management
+
+        // Performance monitoring system for tracking frame timing and display statistics
+        const streamStats = {
+            'main': {
+                element: document.getElementById('main-stats'),
+                lastUpdate: 0,
+                frames: [],
+                maxFrames: 30,
+                droppedFrames: 0
+            },
+            'binary': {
+                element: document.getElementById('binary-stats'),
+                lastUpdate: 0,
+                frames: [],
+                maxFrames: 30,
+                droppedFrames: 0
+            },
+            'roi': {
+                element: document.getElementById('roi-stats'),
+                lastUpdate: 0,
+                frames: [],
+                maxFrames: 30,
+                droppedFrames: 0
+            },
+            'points': {
+                element: document.getElementById('points-stats'),
+                lastUpdate: 0,
+                frames: [],
+                maxFrames: 30,
+                droppedFrames: 0
+            }
+        };
+
+        // Application state management
         let autonomousEnabled = false;
         let debugEnabled = true;
-        
-        // Initialize parameter controls
+        let activeStreams = new Set(['main', 'binary']);
+
+        // Frame processing system for handling incoming video data
+        function handleFrameUpdate(data) {
+            const feed = streamFeeds[data.stream];
+            if (feed && (data.stream === 'main' || activeStreams.has(data.stream))) {
+                // Create data URL from base64 string
+                feed.src = 'data:image/jpeg;base64,' + data.frame;
+                
+                // Update performance statistics
+                const stats = streamStats[data.stream];
+                const now = performance.now();
+                
+                if (stats.lastUpdate) {
+                    const frameTime = now - stats.lastUpdate;
+                    stats.frames.push(frameTime);
+                    
+                    if (stats.frames.length > stats.maxFrames) {
+                        stats.frames.shift();
+                    }
+                    
+                    const avgFrameTime = stats.frames.reduce((a, b) => a + b, 0) / stats.frames.length;
+                    const fps = 1000 / avgFrameTime;
+                    stats.element.textContent = `FPS: ${fps.toFixed(1)} | Dropped: ${stats.droppedFrames}`;
+                }
+                
+                stats.lastUpdate = now;
+            }
+        }
+
+        // Register frame reception handler
+        socket.on('frame_update', handleFrameUpdate);
+
+        // Connection management and error recovery
+        socket.on('connect_error', (error) => {
+            console.error('Connection error:', error);
+            updateStatusDisplay();
+        });
+
+        socket.on('disconnect', () => {
+            console.warn('Disconnected from server - attempting reconnection...');
+            updateStatusDisplay();
+            
+            Object.values(streamFeeds).forEach(feed => {
+                feed.src = '';
+            });
+        });
+
+        socket.on('connect', () => {
+            console.log('Connected to server');
+            updateStatusDisplay();
+        });
+
+        // Parameter control system with debouncing
         function initializeParameters() {
             const sliders = document.querySelectorAll('.parameter-slider');
             sliders.forEach(slider => {
+                let updateTimeout = null;
+                
                 slider.addEventListener('input', function() {
                     const param = this.dataset.param;
                     const value = parseInt(this.value);
                     
-                    // Update display immediately for responsiveness
                     const valueDisplay = document.getElementById(`${param}_value`);
                     if (valueDisplay) {
                         valueDisplay.textContent = value;
                     }
                     
-                    // Send update to server
-                    updateConfig(param, value);
+                    clearTimeout(updateTimeout);
+                    updateTimeout = setTimeout(() => {
+                        updateConfig(param, value);
+                    }, 100);
                 });
             });
         }
-        
-        // Update parameter display value
-        function updateParameterValue(slider) {
-            const valueDisplay = document.getElementById(`${slider.id}_value`);
-            if (valueDisplay) {
-                valueDisplay.textContent = slider.value;
-            }
-        }
-        
-        // Send configuration update to server
+
+        // Configuration update handler
         function updateConfig(param, value) {
-            console.log(`Updating config: ${param} = ${value}`); // Debug log
-            socket.emit('update_config', { param, value });
+            socket.emit('update_config', { param, value }, (response) => {
+                if (!response || !response.success) {
+                    console.error('Config update failed:', response?.error || 'Unknown error');
+                    // Revert slider to previous value
+                    const slider = document.getElementById(param);
+                    const valueDisplay = document.getElementById(`${param}_value`);
+                    if (slider && valueDisplay && response?.config?.[param]) {
+                        slider.value = response.config[param];
+                        valueDisplay.textContent = response.config[param];
+                    }
+                }
+            });
         }
-        
-        // Update metrics display
+
+        // Status display system
+        function updateStatusDisplay() {
+            const statusDiv = document.getElementById('systemStatus');
+            if (!statusDiv) return;
+
+            statusDiv.innerHTML = `
+                <span class="status-indicator ${autonomousEnabled ? 'status-active' : 'status-inactive'}">
+                    ${autonomousEnabled ? 'Autonomous Active' : 'Manual Control'}
+                </span>
+                <span class="status-indicator ${debugEnabled ? 'status-active' : 'status-inactive'}">
+                    Debug Mode ${debugEnabled ? 'On' : 'Off'}
+                </span>
+                <span class="status-indicator ${socket.connected ? 'status-active' : 'status-inactive'}">
+                    ${socket.connected ? 'Connected' : 'Disconnected'}
+                </span>
+                <span class="status-indicator ${socket.connected ? 'status-active' : 'status-inactive'}">
+                    WebSocket ${socket.connected ? 'Active' : 'Inactive'}
+                </span>
+            `;
+        }
+
+        // Stream visibility management
+        function updateStreamVisibility() {
+            const containers = {
+                'binary': document.getElementById('binaryView'),
+                'roi': document.getElementById('roiView'),
+                'points': document.getElementById('pointsView')
+            };
+            
+            for (const [stream, container] of Object.entries(containers)) {
+                if (container) {
+                    const isActive = activeStreams.has(stream);
+                    container.style.display = isActive ? 'block' : 'none';
+                    
+                    if (!isActive) {
+                        streamFeeds[stream].src = '';
+                    }
+                }
+            }
+            
+            document.querySelectorAll('.stream-toggle').forEach(button => {
+                const stream = button.dataset.stream;
+                button.classList.toggle('active', activeStreams.has(stream));
+            });
+        }
+
+        // Metrics update system
         function updateMetrics(metrics) {
             const metricsDiv = document.getElementById('metrics');
+            if (!metricsDiv) return;
+
             metricsDiv.innerHTML = `
                 <div class="metric-item">
-                    <div class="metric-label">FPS</div>
+                    <div class="metric-label">Processing FPS</div>
                     <div class="metric-value">${metrics.processing_fps.toFixed(1)}</div>
                 </div>
                 <div class="metric-item">
@@ -389,7 +550,7 @@
                     <div class="metric-value">${metrics.detection_status}</div>
                 </div>
                 <div class="metric-item">
-                    <div class="metric-label">Width Confidence</div>
+                    <div class="metric-label">Lane Width Confidence</div>
                     <div class="metric-value">${(metrics.lane_width_confidence * 100).toFixed(1)}%</div>
                 </div>
                 <div class="metric-item">
@@ -402,217 +563,77 @@
                 </div>
             `;
         }
-        
-        // Update system status display
-        function updateStatusDisplay() {
-            const statusDiv = document.getElementById('systemStatus');
-            statusDiv.innerHTML = `
-                <span class="status-indicator ${autonomousEnabled ? 'status-active' : 'status-inactive'}">
-                    ${autonomousEnabled ? 'Autonomous Active' : 'Manual Control'}
-                </span>
-                <span class="status-indicator ${debugEnabled ? 'status-active' : 'status-inactive'}">
-                    Debug Mode ${debugEnabled ? 'On' : 'Off'}
-                </span>
-            `;
-        }
-        
-        // Toggle stream visibility
-        function updateStreamVisibility() {
-            const containers = {
-                'binary': document.getElementById('binaryView'),
-                'roi': document.getElementById('roiView'),
-                'points': document.getElementById('pointsView')
-            };
-            
-            for (const [stream, container] of Object.entries(containers)) {
-                if (container) {
-                    container.style.display = activeStreams.has(stream) ? 'block' : 'none';
-                }
-            }
-            
-            // Update toggle buttons
-            document.querySelectorAll('.stream-toggle').forEach(button => {
-                const stream = button.dataset.stream;
-                button.classList.toggle('active', activeStreams.has(stream));
-            });
-        }
-        
-        // Button event handlers
-        document.getElementById('toggleAutonomous').onclick = () => {
-            // Emit the toggle event through Socket.IO instead of making a POST request
-            socket.emit('toggle_autonomous');
-        };
 
-        // Add a handler for autonomous status updates
-        socket.on('autonomous_status', (data) => {
-            autonomousEnabled = data.autonomous_enabled;
-            
-            const button = document.getElementById('toggleAutonomous');
-            button.textContent = autonomousEnabled ? 'Stop Autonomous Mode' : 'Start Autonomous Mode';
-            button.className = autonomousEnabled ? 'button button-stop' : 'button button-start';
-            
-            updateStatusDisplay();
-        });
-        
-        document.getElementById('toggleDebug').onclick = async () => {
-            const response = await fetch('/api/toggle_debug', {method: 'POST'});
-            const data = await response.json();
-            debugEnabled = data.debug_enabled;
-            updateStatusDisplay();
-        };
-        
-        // Stream toggle handling
-        document.querySelectorAll('.stream-toggle').forEach(button => {
-            button.addEventListener('click', function() {
-                const stream = this.dataset.stream;
-                console.log('Toggling stream:', stream); // Debug log
-                socket.emit('toggle_stream', { stream });
-            });
-        });
-
-        // Handle stream updates from server
-        socket.on('stream_update', (data) => {
-            console.log('Stream update received:', data); // Debug log
-            activeStreams = new Set(data.active_streams);
-            
-            // Update button states and container visibility
-            document.querySelectorAll('.stream-toggle').forEach(button => {
-                const stream = button.dataset.stream;
-                const isActive = activeStreams.has(stream);
-                button.classList.toggle('active', isActive);
-                
-                const container = document.getElementById(`${stream}View`);
-                if (container) {
-                    container.style.display = isActive ? 'block' : 'none';
-                }
-            });
-        });
-
-        // Handle frame updates
-        socket.on('frame_update', (data) => {
-            const feed = streamFeeds[data.stream];
-            if (feed) {
-                feed.src = 'data:image/jpeg;base64,' + data.frame;
-            }
-        });
-
-        // Request frames periodically
-        function requestFrames() {
-            // Request main feed
-            socket.emit('request_frame', { stream: 'main' });
-            
-            // Request active debug streams
-            activeStreams.forEach(stream => {
-                if (stream !== 'main') {
-                    socket.emit('request_frame', { stream });
-                }
-            });
-        }
-
-        // Start frame requests
-        setInterval(requestFrames, 33); // ~30 FPS
-
-        // Initialize system state and start updates
-        async function initialize() {
-            // Get initial system state
-            const response = await fetch('/api/status');
-            const data = await response.json();
-            
-            // Update UI with initial values
-            autonomousEnabled = data.autonomous_enabled;
-            debugEnabled = data.debug_enabled;
-            activeStreams = new Set(data.streams.active_streams);
-            
-            // Update UI elements
-            updateStatusDisplay();
-            updateStreamVisibility();
-            
-            // Set initial parameter values
-            if (data.config) {
-                Object.entries(data.config).forEach(([param, value]) => {
-                    const slider = document.getElementById(param);
-                    if (slider) {
-                        slider.value = value;
-                        updateParameterValue(slider);
-                    }
-                });
-            }
-            
-            // Start periodic updates
-            startPeriodicUpdates();
-        }
-
-        // Set up periodic updates for metrics and status
+        // Periodic updates system
         function startPeriodicUpdates() {
-            // Update metrics every 100ms
-            setInterval(async () => {
+            let metricsUpdateCount = 0;
+            const metricsInterval = setInterval(async () => {
                 try {
                     const response = await fetch('/api/metrics');
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
                     const metrics = await response.json();
                     updateMetrics(metrics);
+                    
+                    if (++metricsUpdateCount % 100 === 0) {
+                        const streamPerformance = {};
+                        for (const [streamName, stats] of Object.entries(streamStats)) {
+                            if (stats.frames.length > 0) {
+                                const avgFrameTime = stats.frames.reduce((a, b) => a + b, 0) / stats.frames.length;
+                                streamPerformance[streamName] = {
+                                    fps: 1000 / avgFrameTime,
+                                    dropped: stats.droppedFrames
+                                };
+                            }
+                        }
+                        console.log('Stream Performance:', streamPerformance);
+                    }
                 } catch (error) {
                     console.error('Error updating metrics:', error);
                 }
             }, 100);
-            
-            // Update system status every second
-            setInterval(async () => {
-                try {
-                    const response = await fetch('/api/status');
-                    const data = await response.json();
-                    
-                    autonomousEnabled = data.autonomous_enabled;
-                    debugEnabled = data.debug_enabled;
-                    updateStatusDisplay();
-                    
-                    // Update stream status
-                    if (data.streams) {
-                        activeStreams = new Set(data.streams.active_streams);
-                        updateStreamVisibility();
-                    }
-                } catch (error) {
-                    console.error('Error updating status:', error);
-                }
-            }, 1000);
+
+            window.clearMetricsInterval = () => clearInterval(metricsInterval);
         }
 
-        // Error handling for video streams
-        document.querySelectorAll('.video-feed').forEach(feed => {
-            feed.onerror = function() {
-                console.error('Error loading video feed:', this.src);
-                // Attempt to reload the stream after a short delay
-                setTimeout(() => {
-                    this.src = this.src;
-                }, 1000);
-            };
+        // Event handlers setup
+        document.getElementById('toggleAutonomous')?.addEventListener('click', () => {
+            socket.emit('toggle_autonomous');
         });
 
-        // Keyboard shortcuts
-        document.addEventListener('keydown', function(event) {
-            // Space bar toggles autonomous mode
-            if (event.code === 'Space') {
-                event.preventDefault();
-                document.getElementById('toggleAutonomous').click();
-            }
-            // 'D' key toggles debug mode
-            if (event.code === 'KeyD') {
-                event.preventDefault();
-                document.getElementById('toggleDebug').click();
-            }
+        document.getElementById('toggleDebug')?.addEventListener('click', () => {
+            socket.emit('toggle_debug');
         });
 
-        // Initialize everything when the page loads
-        document.addEventListener('DOMContentLoaded', () => {
-            initializeParameters();
-            initialize();
+        // Stream toggle handlers
+        document.querySelectorAll('.stream-toggle').forEach(button => {
+            button.addEventListener('click', function() {
+                const stream = this.dataset.stream;
+                socket.emit('toggle_stream', { stream });
+            });
         });
 
-        // Add config update handler
-        socket.on('config_update', (data) => {
-            console.log('Config update received:', data); // Debug log
+        // Server event handlers
+        socket.on('autonomous_status', (data) => {
+            autonomousEnabled = data.autonomous_enabled;
             
+            const button = document.getElementById('toggleAutonomous');
+            if (button) {
+                button.textContent = autonomousEnabled ? 'Stop Autonomous Mode' : 'Start Autonomous Mode';
+                button.className = autonomousEnabled ? 'button button-stop' : 'button button-start';
+            }
+            
+            updateStatusDisplay();
+        });
+
+        socket.on('stream_update', (data) => {
+            activeStreams = new Set(data.active_streams);
+            updateStreamVisibility();
+        });
+
+        socket.on('config_update', (data) => {
             if (data.success) {
-                // Update all sliders with new values
                 Object.entries(data.config).forEach(([param, value]) => {
                     const slider = document.getElementById(param);
                     const valueDisplay = document.getElementById(`${param}_value`);
@@ -627,6 +648,122 @@
                 console.error('Config update failed:', data.error);
             }
         });
+
+        // Video stream error handling
+        document.querySelectorAll('.video-feed').forEach(feed => {
+            feed.onerror = function() {
+                console.error('Error loading video feed:', this.src);
+                const streamName = this.id.split('-')[0];
+                if (streamStats[streamName]) {
+                    streamStats[streamName].droppedFrames++;
+                    updateStreamStats(streamName);
+                }
+                setTimeout(() => { this.src = this.src; }, 1000);
+            };
+        });
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', function(event) {
+            if (event.code === 'Space') {
+                event.preventDefault();
+                const button = document.getElementById('toggleAutonomous');
+                if (button) {
+                    button.click();
+                    button.classList.add('pressed');
+                    setTimeout(() => button.classList.remove('pressed'), 200);
+                }
+            }
+            if (event.code === 'KeyD') {
+                event.preventDefault();
+                const button = document.getElementById('toggleDebug');
+                if (button) {
+                    button.click();
+                    button.classList.add('pressed');
+                    setTimeout(() => button.classList.remove('pressed'), 200);
+                }
+            }
+        });
+
+        // Window resize handling
+        let resizeTimeout;
+        window.addEventListener('resize', function() {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(function() {
+                const videoGrid = document.querySelector('.video-grid');
+                if (videoGrid) {
+                    const containerWidth = videoGrid.clientWidth;
+                    const minWidth = 400;
+                    const columns = Math.floor(containerWidth / minWidth);
+                    videoGrid.style.gridTemplateColumns = `repeat(${columns}, 1fr)`;
+                }
+            }, 250);
+        });
+
+        // System initialization
+        async function initialize() {
+            try {
+                const response = await fetch('/api/status');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const data = await response.json();
+                
+                autonomousEnabled = data.autonomous_enabled;
+                debugEnabled = data.debug_enabled;
+                activeStreams = new Set(data.streams.active_streams);
+                
+                updateStatusDisplay();
+                updateStreamVisibility();
+                
+                if (data.config) {
+                    Object.entries(data.config).forEach(([param, value]) => {
+                        const slider = document.getElementById(param);
+                        if (slider) {
+                            slider.value = value;
+                            const valueDisplay = document.getElementById(`${param}_value`);
+                            if (valueDisplay) {
+                                valueDisplay.textContent = value;
+                            }
+                        }
+                    });
+                }
+                
+                startPeriodicUpdates();
+            } catch (error) {
+                console.error('Initialization failed:', error);
+                setTimeout(initialize, 5000);
+            }
+        }
+
+        // Start the system
+        function initializeSystem() {
+            initializeParameters();
+            initialize().catch(error => {
+                console.error('System initialization failed:', error);
+                const statusDiv = document.getElementById('systemStatus');
+                if (statusDiv) {
+                    statusDiv.innerHTML += `
+                        <span class="status-indicator status-inactive">
+                            Initialization Failed - Retrying...
+                        </span>
+                    `;
+                }
+                setTimeout(initializeSystem, 5000);
+            });
+        }
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (window.clearMetricsInterval) {
+                window.clearMetricsInterval();
+            }
+            Object.values(streamFeeds).forEach(feed => {
+                feed.src = '';
+            });
+        });
+
+        // Initialize on page load
+        document.addEventListener('DOMContentLoaded', initializeSystem);
     </script>
 </body>
 </html>

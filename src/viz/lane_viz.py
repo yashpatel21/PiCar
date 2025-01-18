@@ -31,13 +31,13 @@ class LaneVisualizer:
         self.text_thickness = 2            # Bold text for readability
         self.text_padding = 10             # Spacing between text elements
         
-        # Color scheme for different visualization elements
+        # Color scheme for different visualization elements (BGR format)
         self.colors = {
-            'single_lane': (255, 165, 0),     # Green for confirmed lanes
-            'both_lane': (0, 255, 0),   # Orange for estimated lanes
-            'center_line': (0, 0, 255),       # Blue for frame center
-            'debug_points': (0, 255, 255),    # Cyan for detection points
-            'roi_outline': (255, 255, 0)      # Yellow for ROI boundary
+            'single_lane': (0, 165, 255),     # Orange for single lane
+            'both_lane': (0, 255, 0),         # Green for both lanes
+            'center_line': (255, 0, 0),       # Blue for frame center
+            'debug_points': (255, 255, 0),    # Cyan for detection points
+            'roi_outline': (0, 255, 255)      # Yellow for ROI boundary
         }
         
         # Performance tracking variables
@@ -147,47 +147,51 @@ class LaneVisualizer:
 
     def _create_debug_views(self, frame: np.ndarray, 
                         result: DetectionResult) -> Dict[str, np.ndarray]:
-        """Create additional views for system debugging with proper coordinate adjustments."""
         debug_views = {}
         
-        # Calculate ROI offset for point visualization
-        roi_y_start = int(frame.shape[0] * 0.5)
+        # Get dynamic ROI boundaries from metadata
+        roi_y_start = result.metadata['roi_y_start']
+        roi_y_end = result.metadata['roi_y_end']
         
-        # Create binary threshold visualization
+        # Create binary threshold visualization with proper ROI height
         if self.show_binary and 'binary_frame' in result.metadata:
             binary_viz = cv2.cvtColor(result.metadata['binary_frame'], 
                                     cv2.COLOR_GRAY2BGR)
-            threshold_text = f"Threshold: {result.metadata.get('adaptive_threshold', 'N/A')}"
-            self.draw_text(binary_viz, threshold_text, (10, 30))
             debug_views['binary'] = binary_viz
         
         # Create ROI visualization
         if self.show_roi:
             roi_viz = frame.copy()
-            cv2.polylines(roi_viz, [result.metadata['roi_vertices']], 
-                        True, self.colors['roi_outline'], 2)
+            roi_vertices = np.array([
+                [(0, roi_y_start),
+                (0, roi_y_end),
+                (frame.shape[1], roi_y_end),
+                (frame.shape[1], roi_y_start)]
+            ], dtype=np.int32)
+            cv2.polylines(roi_viz, [roi_vertices], True, 
+                        self.colors['roi_outline'], 2)
             debug_views['roi'] = roi_viz
         
-        # Create point detection visualization with proper offset
-        if self.show_debug and 'left_points' in result.metadata:
+        # Create point detection visualization
+        if self.show_debug:
             points_viz = frame.copy()
             
-            # Draw left points with offset
-            if result.metadata['left_points'] is not None:
+            # Draw left points with dynamic ROI offset
+            if result.metadata.get('left_points') is not None:
                 for point in result.metadata['left_points']:
-                    # Create offset point
-                    offset_point = (int(point[0]), int(point[1] + roi_y_start))
-                    cv2.circle(points_viz, offset_point, 2, 
-                            self.colors['debug_points'], -1)
-            
-            # Draw right points with offset
-            if result.metadata['right_points'] is not None:
-                for point in result.metadata['right_points']:
-                    # Create offset point
-                    offset_point = (int(point[0]), int(point[1] + roi_y_start))
+                    offset_point = (int(point[0]), 
+                                int(point[1] + roi_y_start))
                     cv2.circle(points_viz, offset_point, 2,
                             self.colors['debug_points'], -1)
-                            
+            
+            # Draw right points with dynamic ROI offset
+            if result.metadata.get('right_points') is not None:
+                for point in result.metadata['right_points']:
+                    offset_point = (int(point[0]),
+                                int(point[1] + roi_y_start))
+                    cv2.circle(points_viz, offset_point, 2,
+                            self.colors['debug_points'], -1)
+            
             debug_views['points'] = points_viz
         
         return debug_views

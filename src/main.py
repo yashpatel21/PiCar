@@ -196,6 +196,7 @@ class SelfDrivingSystem:
         print("\nInitiating system shutdown...")
         self.running = False
         self.vehicle.stop()
+        time.sleep(0.2) # Give web server threads time to clean up
         self.camera.stop()
         print("System shutdown complete.")
         sys.exit(0)
