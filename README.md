@@ -98,9 +98,9 @@ Potential areas for lane following system enhancement:
 - Performance optimization for resource-constrained environments
 
 Enhancements for advanced autonomous driving system:
-- Integration of deep learning for object detection (traffic signs, pedestrians, etc.)
-- Object avoidance and emergency stop
-- Advanced traffic logic and decision making based on object detection
+- _(WIP):_ Integration of deep learning for object detection (traffic signs, pedestrians, etc.)
+- _(WIP):_ Object avoidance and emergency stop
+- _(WIP):_ Advanced traffic logic and decision making based on object detection
 
 Performance enhancements:
 - Optimize processing rate and efficiency
